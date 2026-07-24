@@ -1,0 +1,14 @@
+.env
+.DS_Store
+.claude/
+claude 历史对话/
+dist/
+node_modules/
+*.tsbuildinfo
+server/data/generated/
+server/data/ai-config.json
+server/data/ai-config.tmp.json
+server/data/access-control.json
+server/data/access-control.tmp.json
+server/data/state.json
+server/data/state.backup.json
