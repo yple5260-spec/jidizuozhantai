@@ -21,7 +21,7 @@ const call=async(path:string,options:RequestInit={}):Promise<AccessState>=>{
 export const accessApi={
  get:()=>call('/api/access'),
  saveUser:(user:SystemUser)=>call('/api/access/users',{method:'PUT',body:JSON.stringify({user})}),
- userAction:(id:string,action:'toggle_status'|'reset_password')=>call(`/api/access/users/${id}/action`,{method:'POST',body:JSON.stringify({action})}),
+ userAction:(id:string,action:'toggle_status'|'reset_password',temporaryPassword='')=>call(`/api/access/users/${id}/action`,{method:'POST',body:JSON.stringify({action,temporaryPassword})}),
  saveRole:(role:SystemRole)=>call('/api/access/roles',{method:'PUT',body:JSON.stringify({role})}),
  deleteRole:(id:string)=>call(`/api/access/roles/${id}`,{method:'DELETE'}),
 }

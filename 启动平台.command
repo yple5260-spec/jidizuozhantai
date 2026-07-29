@@ -75,8 +75,17 @@ fi
 echo
 echo "正在检查并启动本地业务API：http://localhost:4174"
 
-EXPECTED_API_VERSION="2026.07.24-deepseek-ai-v1"
-RUNNING_API_VERSION=$(curl -fsS "http://127.0.0.1:4174/api/health" 2>/dev/null | node -e "let s='';process.stdin.on('data',d=>s+=d);process.stdin.on('end',()=>{try{console.log(JSON.parse(s).version||'')}catch{console.log('')}})" 2>/dev/null || true)
+EXPECTED_API_VERSION=$(node --input-type=module -e "import('./server/version.js').then(module=>console.log(module.API_VERSION))")
+HEALTH_URL="http://127.0.0.1:4174/health"
+API_LOG="${TMPDIR:-/tmp}/hebei-operations-api.log"
+
+read_api_version() {
+  curl --max-time 2 -fsS "$HEALTH_URL" 2>/dev/null \
+    | node -e "let s='';process.stdin.on('data',d=>s+=d);process.stdin.on('end',()=>{try{console.log(JSON.parse(s).version||'')}catch{console.log('')}})" 2>/dev/null \
+    || true
+}
+
+RUNNING_API_VERSION=$(read_api_version)
 
 if [ "$RUNNING_API_VERSION" = "$EXPECTED_API_VERSION" ]; then
   echo "检测到同版本业务API已运行，将复用现有服务（$EXPECTED_API_VERSION）。"
@@ -95,7 +104,9 @@ else
   fi
   # 直接启动 Node 服务，使 API_PID 指向真实服务进程。
   # 这样窗口退出或启动失败时可以完整清理，不留下占用4174端口的子进程。
-  node server/server.js > "${TMPDIR:-/tmp}/hebei-operations-api.log" 2>&1 &
+  : > "$API_LOG"
+  # server/env.js 会读取项目根目录 .env，同时兼容 Node.js 18。
+  node server/server.js > "$API_LOG" 2>&1 &
   API_PID=$!
 fi
 
@@ -106,17 +117,31 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-sleep 1
-if [ "$(curl -fsS "http://127.0.0.1:4174/api/health" 2>/dev/null | node -e "let s='';process.stdin.on('data',d=>s+=d);process.stdin.on('end',()=>{try{console.log(JSON.parse(s).version||'')}catch{console.log('')}})" 2>/dev/null || true)" != "$EXPECTED_API_VERSION" ]; then
+# MySQL 首次连接和迁移可能需要数秒，最多等待 15 秒，不再用固定 1 秒误判失败。
+STARTED_API_VERSION=$(read_api_version)
+for _ in {1..30}; do
+  if [ "$STARTED_API_VERSION" = "$EXPECTED_API_VERSION" ]; then
+    break
+  fi
+  if [ -n "$API_PID" ] && ! kill -0 "$API_PID" 2>/dev/null; then
+    break
+  fi
+  sleep 0.5
+  STARTED_API_VERSION=$(read_api_version)
+done
+
+if [ "$STARTED_API_VERSION" != "$EXPECTED_API_VERSION" ]; then
   echo "业务API启动失败，日志如下："
-  cat "${TMPDIR:-/tmp}/hebei-operations-api.log" 2>/dev/null || true
-  echo "请确认4174端口未被其他程序占用，然后重新双击启动脚本。"
+  cat "$API_LOG" 2>/dev/null || true
+  echo "请检查上方具体错误；也可确认4174端口和数据库网络后重新双击启动脚本。"
   pause_and_exit 1
 fi
 
-echo "业务API已启动，状态与任务将保存到 server/data/state.json"
+echo "业务API已启动：$STARTED_API_VERSION"
 echo "正在启动前端：http://localhost:4173"
 echo "服务运行期间请保持本窗口打开；关闭窗口会同时停止前端与API。"
-(sleep 2 && open "http://localhost:4173") &
+if [ "${SKIP_OPEN:-0}" != "1" ]; then
+  (sleep 2 && open "http://localhost:4173") &
+fi
 
 npm run dev -- --port 4173

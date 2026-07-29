@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hebei-command-center-config
+data:
+  NODE_ENV: production
+  API_PORT: "4174"
+  DATA_DIR: /app/data
+  AUTO_MIGRATE: "false"
+  DATA_SOURCE_SCHEMA: ai_hack_s2
+  REAL_DATA_CACHE_MS: "60000"
+  DEEPSEEK_MODEL: deepseek-v4-flash
+  DEEPSEEK_BASE_URL: https://api.deepseek.com
+  DEEPSEEK_TIMEOUT_MS: "45000"
+  SESSION_TTL_HOURS: "8"
+  TZ: Asia/Shanghai

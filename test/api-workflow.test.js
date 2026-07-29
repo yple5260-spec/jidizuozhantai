@@ -24,7 +24,7 @@ async function startServer(extraEnv={},autoAuth=true){
  const port=await getFreePort()
  const child=spawn(process.execPath,['server/server.js'],{
   cwd:projectRoot,
-  env:{...process.env,API_PORT:String(port),DATA_DIR:dataDir,...extraEnv},
+  env:{...process.env,NODE_ENV:'test',DATABASE_URL:'',API_PORT:String(port),DATA_DIR:dataDir,SESSION_SECRET:'test-session-secret-32-characters-minimum',...extraEnv},
   stdio:['ignore','pipe','pipe'],
  })
  let output=''
@@ -50,6 +50,7 @@ async function startServer(extraEnv={},autoAuth=true){
   defaultCookie=login.headers.get('set-cookie').split(';')[0]
   const changed=await rawRequest('POST','/api/auth/change-password',{currentPassword:'000000',newPassword:'Admin2026!'},{cookie:defaultCookie})
   if(changed.status!==200)throw new Error(`测试管理员会话初始化失败：${JSON.stringify(changed.data)}`)
+  defaultCookie=changed.headers.get('set-cookie').split(';')[0]
  }
  const request=(method,pathname,payload,headers={})=>rawRequest(method,pathname,payload,{...(defaultCookie?{cookie:defaultCookie}:{}),...headers})
  return {dataDir,child,request,rawRequest,defaultCookie,close:async()=>{child.kill('SIGTERM');await rm(dataDir,{recursive:true,force:true})}}
@@ -205,6 +206,84 @@ test('质检协同单进入班长PDCA并回到质检复检闭环',async()=>{
  }finally{await app.close()}
 })
 
+test('精益任务支持AI目标建议、跨岗位指派、数据辅助验收和标准化闭环',async()=>{
+ const app=await startServer()
+ try{
+  const suggestion=await app.request('POST','/api/tasks/target-suggestion',{
+   role:'manager',issueCategory:'服务质量',issueLocation:'普通客服一区·8班 / 李倩 JR10776',
+   problem:'员工人工服务满意率连续两日低于个人目标，需要定位服务动作差距。',metricCode:'satisfaction',baselineValue:93.2,
+  })
+  assert.equal(suggestion.status,200)
+  assert.equal(suggestion.data.provider,'system')
+  assert.equal(suggestion.data.suggestion.metricCode,'satisfaction')
+  assert.equal(suggestion.data.suggestion.targetValue,97.2)
+
+  const plannedStartAt=new Date(Date.now()+60*60*1000).toISOString()
+  const submitDueAt=new Date(Date.now()+24*60*60*1000).toISOString()
+  const verificationDueAt=new Date(Date.now()+48*60*60*1000).toISOString()
+  const payload={
+   source:'management-directive',role:'manager',targetRole:'quality',owner:'质检专员',
+   title:'人工满意率两日改善专项',issueCategory:'服务质量',
+   issueLocation:'普通客服一区·8班 / 李倩 JR10776 / 低满意录音',
+   problem:'人工服务满意率连续两日低于个人目标，需定位服务动作和业务解决过程中的具体差距。',
+   target:'人工服务满意率提升至不低于97.2%',
+   successCriteria:'验证时读取近两日系统数据，满意率达到97.2%，并提交录音复盘和辅导记录。',
+   actionPlan:'复盘近3通低满意录音，完成服务四动作校准，并每日抽检2通新录音。',
+   metricCode:'satisfaction',metricLabel:'人工服务满意率',metricUnit:'%',metricDirection:'higher',
+   baselineValue:93.2,targetValue:97.2,employeeCode:'JR10776',employeeName:'李倩',team:'普通客服一区·8班',
+   plannedStartAt,submitDueAt,verificationDueAt,
+  }
+  const created=await app.request('POST','/api/tasks',payload)
+  assert.equal(created.status,201)
+  const task=created.data.tasks[0]
+  assert.match(task.id,/^LP-\d{8}-\d{3}$/)
+  assert.equal(task.workflowKind,'lean_directive')
+  assert.equal(task.initiatorRole,'manager')
+  assert.equal(task.executionOwnerRole,'quality')
+  assert.equal(task.verificationRole,'manager')
+  assert.equal(task.phase,'P')
+  assert.equal(task.nodes.length,5)
+  assert.equal(task.nodes[0].status,'completed')
+  assert.equal(task.metricSnapshots[0].actual,93.2)
+
+  const forbidden=await app.request('POST','/api/tasks',{...payload,role:'supervisor'})
+  assert.equal(forbidden.status,403)
+
+  const started=await app.request('POST',`/api/tasks/${task.id}/action`,{role:'quality',actor:'测试质检',action:'lean_start'})
+  assert.equal(started.status,200)
+  assert.equal(started.data.tasks[0].status,'doing')
+  assert.equal(started.data.tasks[0].phase,'D')
+
+  const submitted=await app.request('POST',`/api/tasks/${task.id}/action`,{
+   role:'quality',actor:'测试质检',action:'lean_submit',actualValue:97.5,
+   evidence:'已复盘3通低满意录音，完成服务四动作校准，并抽检4通新录音。',
+  })
+  assert.equal(submitted.status,200)
+  assert.equal(submitted.data.tasks[0].status,'pending_verification')
+  assert.equal(submitted.data.tasks[0].ownerRole,'manager')
+  assert.equal(submitted.data.tasks[0].metricSnapshots.at(-1).actual,97.5)
+
+  const improvement=await app.request('GET',`/api/tasks/${task.id}/improvement?role=manager`)
+  assert.equal(improvement.status,200)
+  assert.equal(improvement.data.baseline,93.2)
+  assert.equal(improvement.data.latest,97.5)
+  assert.equal(improvement.data.targetMet,true)
+  assert.match(improvement.data.conclusion,/已达到目标/)
+
+  const closed=await app.request('POST',`/api/tasks/${task.id}/action`,{
+   role:'manager',actor:'测试经理',action:'lean_verify_success',
+   comment:'近两日满意率已提升至97.5%，录音抽检与辅导记录完整，确认改善有效。',
+   standardizedAction:'将服务四动作校准纳入班组每日两通录音抽检，并连续跟踪七日。',
+  })
+  assert.equal(closed.status,200)
+  assert.equal(closed.data.tasks[0].status,'closed')
+  assert.equal(closed.data.tasks[0].phase,'A')
+  assert.equal(closed.data.tasks[0].progress,100)
+  assert.equal(closed.data.tasks[0].nodes.every(node=>node.status==='completed'),true)
+  assert.match(closed.data.tasks[0].standardizedAction,/连续跟踪七日/)
+ }finally{await app.close()}
+})
+
 test('质检计划、抽检、申诉、校准与案例库形成生产闭环',async()=>{
  const app=await startServer()
  try{
@@ -343,7 +422,7 @@ test('题库场次、员工考试、班长验效、员工建议与成长评估�
  const app=await startServer()
  try{
   const baseline=(await app.request('GET','/api/state')).data
-  assert.equal(baseline.learning.version,1)
+  assert.equal(baseline.learning.version,2)
   assert.equal(baseline.learning.questionBanks.length,2)
   assert.equal(baseline.learning.assignments.find(item=>item.id==='LA-20260725-001').status,'assigned')
 
@@ -403,6 +482,47 @@ test('题库场次、员工考试、班长验效、员工建议与成长评估�
   assert.equal(reviewClosed.status,200)
   assert.equal(reviewClosed.data.learning.growthReviews.find(item=>item.id===reviewId).status,'closed')
   assert.ok(reviewClosed.data.notifications.some(item=>item.role==='employee'&&item.title.includes('30日成长评估已完成')))
+ }finally{await app.close()}
+})
+
+test('培训面谈支持多岗位发起、责任人回执和发起人验收闭环',async()=>{
+ const app=await startServer()
+ try{
+  const dueAt=new Date(Date.now()+24*60*60*1000).toISOString()
+  const trainingCreated=await app.request('POST','/api/development/cases',{
+   role:'training',type:'training',title:'测试业务规范专项训练',employeeId:'JR10776',responderRole:'employee',dueAt,
+   reason:'质检发现业务规则解释存在重复差错，需要面向员工完成针对性训练。',
+   goal:'员工完成课程与两通录音复盘，后续抽查同类问题不再发生。',
+  })
+  assert.equal(trainingCreated.status,201)
+  const trainingCase=trainingCreated.data.learning.developmentCases.find(item=>item.title==='测试业务规范专项训练')
+  assert.equal(trainingCase.status,'pending_acceptance')
+  assert.equal(trainingCase.ownerRole,'employee')
+
+  const accepted=await app.request('POST',`/api/development/cases/${trainingCase.id}/action`,{role:'employee',action:'accept',comment:'已接收任务并确认今日完成'})
+  assert.equal(accepted.status,200)
+  assert.equal(accepted.data.learning.developmentCases.find(item=>item.id===trainingCase.id).status,'in_progress')
+  const submitted=await app.request('POST',`/api/development/cases/${trainingCase.id}/action`,{role:'employee',action:'submit',comment:'已完成课程学习和两通录音复盘，关键业务步骤可以独立执行。'})
+  assert.equal(submitted.status,200)
+  assert.equal(submitted.data.learning.developmentCases.find(item=>item.id===trainingCase.id).ownerRole,'training')
+  assert.equal((await app.request('POST',`/api/development/cases/${trainingCase.id}/action`,{role:'quality',action:'verify_success',comment:'质检岗位尝试越权验收'})).status,409)
+  const verified=await app.request('POST',`/api/development/cases/${trainingCase.id}/action`,{role:'training',action:'verify_success',comment:'结果和证据符合训练目标，验收关闭。'})
+  assert.equal(verified.status,200)
+  assert.equal(verified.data.learning.developmentCases.find(item=>item.id===trainingCase.id).status,'closed')
+
+  const employeeCreated=await app.request('POST','/api/development/cases',{
+   role:'employee',type:'interview',title:'测试员工主动面谈需求',employeeId:'JR10776',responderRole:'hrbp',dueAt,
+   reason:'希望就个人排班适应和后续发展方向进行一次结构化沟通。',
+   goal:'HRBP完成沟通并给出明确回执，员工确认问题得到解决后关闭。',
+  })
+  assert.equal(employeeCreated.status,201)
+  const employeeCase=employeeCreated.data.learning.developmentCases.find(item=>item.title==='测试员工主动面谈需求')
+  assert.equal(employeeCase.verificationRole,'employee')
+  assert.equal((await app.request('POST',`/api/development/cases/${employeeCase.id}/action`,{role:'hrbp',action:'accept',comment:'已安排明日十点进行沟通'})).status,200)
+  assert.equal((await app.request('POST',`/api/development/cases/${employeeCase.id}/action`,{role:'hrbp',action:'submit',comment:'已完成沟通，明确排班适应方案和后续能力发展建议。'})).status,200)
+  const employeeVerified=await app.request('POST',`/api/development/cases/${employeeCase.id}/action`,{role:'employee',action:'verify_success',comment:'已收到明确回执，确认本次需求解决。'})
+  assert.equal(employeeVerified.status,200)
+  assert.equal(employeeVerified.data.learning.developmentCases.find(item=>item.id===employeeCase.id).status,'closed')
  }finally{await app.close()}
 })
 
@@ -661,11 +781,23 @@ test('排班考勤从员工申请流转至HRBP备案，跨班调度由经理审�
   })
   assert.equal(unsafeCreated.status,201)
   const unsafe=unsafeCreated.data.workforce.requests[0]
+  assert.equal(unsafe.aiWarning.acknowledged,false)
+  assert.match(unsafe.aiWarning.message,/低于95%目标线/)
   const blocked=await app.request('POST',`/api/workforce/requests/${unsafe.id}/action`,{role:'manager',action:'manager_approve'})
   assert.equal(blocked.status,409)
-  assert.equal(blocked.data.code,'WORKFORCE_SOURCE_UNDER_TARGET')
-  assert.match(blocked.data.error,/低于95%保护线/)
-  assert.equal((await app.request('GET','/api/state')).data.workforce.requests.find(item=>item.id===unsafe.id).status,'manager_pending')
+  assert.equal(blocked.data.code,'AI_WARNING_ACK_REQUIRED')
+  assert.match(blocked.data.error,/先知悉AI目标偏差提醒/)
+  const acknowledged=await app.request('POST',`/api/workforce/requests/${unsafe.id}/action`,{role:'manager',action:'manager_acknowledge_warning'})
+  const acknowledgedRequest=acknowledged.data.workforce.requests.find(item=>item.id===unsafe.id)
+  assert.equal(acknowledged.status,200)
+  assert.equal(acknowledgedRequest.status,'manager_pending')
+  assert.equal(acknowledgedRequest.aiWarning.acknowledged,true)
+  assert.ok(acknowledgedRequest.aiWarning.acknowledgedAt)
+  const approvedDespiteWarning=await app.request('POST',`/api/workforce/requests/${unsafe.id}/action`,{role:'manager',action:'manager_approve',comment:'已知悉目标偏差，因突发高峰批准临时支援，并要求15分钟后回调。'})
+  const approvedUnsafe=approvedDespiteWarning.data.workforce.requests.find(item=>item.id===unsafe.id)
+  assert.equal(approvedDespiteWarning.status,200)
+  assert.equal(approvedUnsafe.status,'closed')
+  assert.match(approvedUnsafe.history.at(-2).action,/已知悉AI目标偏差提醒/)
  }finally{await app.close()}
 })
 
@@ -759,13 +891,14 @@ test('用户角色权限服务持久化、哈希密码并执行服务端RBAC',as
   const adminLogin=await app.request('POST','/api/auth/login',{jobNo:'JZ053684',password:'000000'})
   assert.equal(adminLogin.status,200)
   assert.equal(adminLogin.data.requiresPasswordChange,true)
-  const adminCookie=adminLogin.headers.get('set-cookie').split(';')[0]
+  const initialAdminCookie=adminLogin.headers.get('set-cookie').split(';')[0]
   assert.match(adminLogin.headers.get('set-cookie'),/HttpOnly/)
   assert.match(adminLogin.headers.get('set-cookie'),/SameSite=Lax/)
-  assert.equal((await app.request('GET','/api/access',undefined,{cookie:adminCookie})).status,403)
-  const changed=await app.request('POST','/api/auth/change-password',{currentPassword:'000000',newPassword:'Admin2026!'}, {cookie:adminCookie})
+  assert.equal((await app.request('GET','/api/access',undefined,{cookie:initialAdminCookie})).status,403)
+  const changed=await app.request('POST','/api/auth/change-password',{currentPassword:'000000',newPassword:'Admin2026!'}, {cookie:initialAdminCookie})
   assert.equal(changed.status,200)
   assert.equal(changed.data.requiresPasswordChange,false)
+  const adminCookie=changed.headers.get('set-cookie').split(';')[0]
   const authenticatedSession=await app.request('GET','/api/auth/session',undefined,{cookie:adminCookie})
   assert.equal(authenticatedSession.status,200)
   assert.equal(authenticatedSession.data.user.id,'U001')
@@ -778,8 +911,10 @@ test('用户角色权限服务持久化、哈希密码并执行服务端RBAC',as
 
   const rolePayload={id:'new-role',name:'现场支撑专员',code:'FIELD_SUPPORT',level:'自定义',description:'处理现场支撑任务',memberCount:0,menus:['command','tasks'],builtIn:false,status:'active'}
   const managerLogin=await app.request('POST','/api/auth/login',{jobNo:'JZ001218',password:'000000'})
-  const managerCookie=managerLogin.headers.get('set-cookie').split(';')[0]
-  assert.equal((await app.request('POST','/api/auth/change-password',{currentPassword:'000000',newPassword:'Manager2026!'},{cookie:managerCookie})).status,200)
+  const initialManagerCookie=managerLogin.headers.get('set-cookie').split(';')[0]
+  const managerChanged=await app.request('POST','/api/auth/change-password',{currentPassword:'000000',newPassword:'Manager2026!'},{cookie:initialManagerCookie})
+  assert.equal(managerChanged.status,200)
+  const managerCookie=managerChanged.headers.get('set-cookie').split(';')[0]
   const forbidden=await app.request('PUT','/api/access/roles',{role:rolePayload},{cookie:managerCookie})
   assert.equal(forbidden.status,403)
   const roleSaved=await app.request('PUT','/api/access/roles',{role:rolePayload},{cookie:adminCookie})
@@ -811,7 +946,7 @@ test('用户角色权限服务持久化、哈希密码并执行服务端RBAC',as
   assert.equal(duplicate.status,409)
   assert.equal((await app.request('DELETE',`/api/access/roles/${customRole.id}`,undefined,{cookie:adminCookie})).status,409)
   assert.equal((await app.request('POST','/api/access/users/U001/action',{action:'toggle_status'},{cookie:adminCookie})).status,409)
-  assert.equal((await app.request('POST',`/api/access/users/${publicUser.id}/action`,{action:'reset_password'},{cookie:adminCookie})).status,200)
+  assert.equal((await app.request('POST',`/api/access/users/${publicUser.id}/action`,{action:'reset_password',temporaryPassword:'Reset2026!'},{cookie:adminCookie})).status,200)
 
   const reassigned=await app.request('PUT','/api/access/users',{user:{...edited.data.users.find(item=>item.id===publicUser.id),roleId:'customer-agent',password:''}},{cookie:adminCookie})
   assert.equal(reassigned.status,200)
@@ -835,8 +970,10 @@ test('业务状态按岗位最小可见且普通账号不能伪造角色执行�
   assert.equal((await app.request('GET','/api/reports/catalog')).status,401)
 
   const adminLogin=await app.request('POST','/api/auth/login',{jobNo:'JZ053684',password:'000000'})
-  const adminCookie=adminLogin.headers.get('set-cookie').split(';')[0]
-  assert.equal((await app.request('POST','/api/auth/change-password',{currentPassword:'000000',newPassword:'Admin2026!'},{cookie:adminCookie})).status,200)
+  const initialAdminCookie=adminLogin.headers.get('set-cookie').split(';')[0]
+  const adminChanged=await app.request('POST','/api/auth/change-password',{currentPassword:'000000',newPassword:'Admin2026!'},{cookie:initialAdminCookie})
+  assert.equal(adminChanged.status,200)
+  const adminCookie=adminChanged.headers.get('set-cookie').split(';')[0]
   const createUser=async user=>{
    const response=await app.request('PUT','/api/access/users',{user},{cookie:adminCookie})
    assert.equal(response.status,200)
@@ -848,9 +985,10 @@ test('业务状态按岗位最小可见且普通账号不能伪造角色执行�
 
   const loginReady=async(jobNo,newPassword)=>{
    const login=await app.request('POST','/api/auth/login',{jobNo,password:'Temp123!'})
-   const cookie=login.headers.get('set-cookie').split(';')[0]
-   assert.equal((await app.request('POST','/api/auth/change-password',{currentPassword:'Temp123!',newPassword},{cookie})).status,200)
-   return cookie
+   const initialCookie=login.headers.get('set-cookie').split(';')[0]
+   const changed=await app.request('POST','/api/auth/change-password',{currentPassword:'Temp123!',newPassword},{cookie:initialCookie})
+   assert.equal(changed.status,200)
+   return changed.headers.get('set-cookie').split(';')[0]
   }
   const supervisorCookie=await loginReady('QA-SUP-001','Supervisor2026!')
   const employeeCookie=await loginReady('QA-EMP-001','Employee2026!')
@@ -906,6 +1044,7 @@ test('业务状态按岗位最小可见且普通账号不能伪造角色执行�
   assert.equal((await app.request('POST','/api/workforce/requests',{role:'supervisor',kind:'cross_team_dispatch',fromTeam:'普通客服一区·6班',toTeam:'普通客服一区·4班',date:'2026-07-25',detail:'伪造调度'},{cookie:employeeCookie})).status,403)
   assert.equal((await app.request('POST','/api/workforce/requests',{role:'employee',kind:'leave',employeeId:'EMP-10913',date:'2026-07-25',detail:'为其他员工伪造请假'},{cookie:employeeCookie})).status,403)
   assert.equal((await app.request('POST','/api/learning/banks/QB-10015-RENEW-V4/action',{role:'training',action:'publish'},{cookie:employeeCookie})).status,403)
+  assert.equal((await app.request('POST','/api/development/cases',{role:'quality',type:'training',title:'伪造质检培训',employeeId:'JR10776',responderRole:'employee',dueAt:new Date(Date.now()+24*60*60*1000).toISOString(),reason:'伪造跨岗位培训发起，试图绕过岗位权限限制。',goal:'伪造目标用于验证权限拦截是否有效。'},{cookie:employeeCookie})).status,403)
 
   const trainingState=await app.request('GET','/api/state',undefined,{cookie:trainingCookie})
   assert.equal(trainingState.data.training.cohorts.length,1)
@@ -940,11 +1079,15 @@ test('AI配置受RBAC保护，行动草案经人工确认进入跨岗位PDCA闭�
   const before=await app.request('GET','/api/ai/status')
   assert.equal(before.status,401)
   const adminLogin=await app.request('POST','/api/auth/login',{jobNo:'JZ053684',password:'000000'})
-  const adminCookie=adminLogin.headers.get('set-cookie').split(';')[0]
-  assert.equal((await app.request('POST','/api/auth/change-password',{currentPassword:'000000',newPassword:'Admin2026!'},{cookie:adminCookie})).status,200)
+  const initialAdminCookie=adminLogin.headers.get('set-cookie').split(';')[0]
+  const adminChanged=await app.request('POST','/api/auth/change-password',{currentPassword:'000000',newPassword:'Admin2026!'},{cookie:initialAdminCookie})
+  assert.equal(adminChanged.status,200)
+  const adminCookie=adminChanged.headers.get('set-cookie').split(';')[0]
   const managerLogin=await app.request('POST','/api/auth/login',{jobNo:'JZ001218',password:'000000'})
-  const managerCookie=managerLogin.headers.get('set-cookie').split(';')[0]
-  assert.equal((await app.request('POST','/api/auth/change-password',{currentPassword:'000000',newPassword:'Manager2026!'},{cookie:managerCookie})).status,200)
+  const initialManagerCookie=managerLogin.headers.get('set-cookie').split(';')[0]
+  const managerChanged=await app.request('POST','/api/auth/change-password',{currentPassword:'000000',newPassword:'Manager2026!'},{cookie:initialManagerCookie})
+  assert.equal(managerChanged.status,200)
+  const managerCookie=managerChanged.headers.get('set-cookie').split(';')[0]
   const initialStatus=await app.request('GET','/api/ai/status',undefined,{cookie:adminCookie})
   assert.equal(initialStatus.status,200)
   assert.equal(initialStatus.data.configured,false)

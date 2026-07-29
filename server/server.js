@@ -1,31 +1,46 @@
+import './env.js'
 import http from 'node:http'
 import fs from 'node:fs'
 import path from 'node:path'
+import { randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
-import { load,save,reset,now,dataDir } from './store.js'
+import { now,dataDir } from './store.js'
 import { artifactPath,buildPreview,catalog,createRun,filterRuns,recordDownload } from './reportService.js'
 import { getAiConfig,publicAiConfig,saveAiConfig } from './aiConfig.js'
-import { authenticate, changePassword, deleteRole, loadAccess, publicAccess, requirePermission, saveRole, saveUser, userAction } from './accessStore.js'
+import { authenticate, changePassword, deleteRole, initializeAccessPersistence, loadAccess, publicAccess, requirePermission, revokeSessions, saveRole, saveUser, userAction } from './accessStore.js'
 import { createSession, destroySession, publicSession, requireReadySession, requireSession, sessionPayload } from './auth.js'
+import { databaseClose,databaseConfigured,databaseHealth,databaseTarget } from './database.js'
+import { buildLiveReportPreview,getRealData,getTaskMetricTrend } from './realDataRepository.js'
+import { migrateBusinessSchema } from './migrate.js'
+import { initializeStatePersistence,loadState,resetState,saveState,statePersistenceMode } from './statePersistence.js'
+import { aiHistory,appendAiExchange,claimScheduledBatch,clearAiHistory,deleteTaskAttachment,finishScheduledBatch,loadTaskAttachment,markNotificationRead,notificationReadIds,saveTaskAttachment } from './runtimeRepository.js'
+import { completeTaskNode,improvementSummary,normalizeLeanTask,systemTargetSuggestion } from './leanPdca.js'
+import { API_VERSION } from './version.js'
 
 const PORT=process.env.API_PORT||process.env.PORT||4174
 const CORS_ORIGIN=String(process.env.CORS_ORIGIN||'').trim()
-const API_VERSION='2026.07.25-governance-operations-v8'
 const here=path.dirname(fileURLToPath(import.meta.url))
 const distDir=path.resolve(here,'../dist')
-const envFile=path.resolve(here,'../.env')
-if(fs.existsSync(envFile)){
- for(const line of fs.readFileSync(envFile,'utf8').split(/\r?\n/)){
-  const match=line.match(/^\s*([A-Z_][A-Z0-9_]*)\s*=\s*(.*?)\s*$/)
-  if(!match||match[1] in process.env)continue
-  process.env[match[1]]=match[2].replace(/^(['"])(.*)\1$/,'$2')
- }
-}
+const load=loadState
+const save=saveState
+const reset=resetState
+const instanceId=process.env.INSTANCE_ID||randomUUID()
+const reportPreview=base=>String(process.env.DATABASE_URL||'').trim()?buildLiveReportPreview(base):Promise.resolve(base)
 const roles={leader:'客服班长',supervisor:'客服主管',manager:'客服经理',director:'运营总监',quality:'质检专员',employee:'客服专员',training:'培训主管',hrbp:'HRBP经理'}
 const runtimeRoleByAccessRole={'system-admin':'director','operation-director':'director','customer-manager':'manager','customer-supervisor':'supervisor','team-leader':'leader','customer-agent':'employee','quality-specialist':'quality','training-manager':'training','hrbp-manager':'hrbp'}
 const aiVerificationRole={employee:'leader',leader:'supervisor',supervisor:'manager',manager:'director',director:'director',quality:'manager',training:'manager',hrbp:'manager'}
 const json=(res,status,data)=>{res.writeHead(status,{'content-type':'application/json; charset=utf-8',...(CORS_ORIGIN?{'access-control-allow-origin':CORS_ORIGIN,'access-control-allow-credentials':'true','vary':'origin'}:{}),'access-control-allow-headers':'content-type','access-control-allow-methods':'GET,POST,PUT,DELETE,OPTIONS'});res.end(JSON.stringify(data))}
-const body=async req=>{let b='';for await(const c of req)b+=c;return b?JSON.parse(b):{}}
+const body=async req=>{
+ let b='',size=0
+ for await(const c of req){
+  size+=c.length
+  if(size>8*1024*1024)throw Object.assign(new Error('请求内容不能超过8MB'),{status:413,code:'REQUEST_TOO_LARGE'})
+  b+=c
+ }
+ if(!b)return {}
+ try{return JSON.parse(b)}
+ catch{throw Object.assign(new Error('请求内容不是有效JSON'),{status:400,code:'INVALID_JSON'})}
+}
 const addNotice=(s,role,title,desc,target='alerts',priority='medium')=>s.notifications.unshift({id:`NT-${Date.now()}-${Math.random().toString(36).slice(2,6)}`,role,title,desc,target,priority,createdAt:now(),read:false})
 const audit=(s,actor,action)=>s.audit.unshift({at:now(),actor,action})
 const actionTime=()=>new Intl.DateTimeFormat('zh-CN',{timeZone:'Asia/Shanghai',hour:'2-digit',minute:'2-digit',hour12:false}).format(new Date())
@@ -43,7 +58,7 @@ const requireRuntimeRole=(req,requestedRole,allowedRoles=Object.keys(roles))=>{
 }
 const taskVisibleToRole=(task,role)=>{
  if(role==='director')return true
- if(role==='manager')return task.ownerRole==='manager'||task.originRole==='manager'||task.verificationRole==='manager'||task.ownerRole==='director'
+ if(role==='manager')return true
  if(role==='supervisor')return task.ownerRole==='supervisor'||task.ownerRole==='leader'||task.originRole==='supervisor'||task.verificationRole==='supervisor'
  if(role==='leader')return task.ownerRole==='leader'||task.originRole==='leader'||task.verificationRole==='leader'
  if(role==='employee')return task.ownerRole==='employee'||task.originRole==='employee'||task.verificationRole==='employee'
@@ -51,6 +66,11 @@ const taskVisibleToRole=(task,role)=>{
  if(role==='training')return task.ownerRole==='training'||task.originRole==='training'||task.verificationRole==='training'
  if(role==='hrbp')return task.ownerRole==='hrbp'||task.originRole==='hrbp'||task.verificationRole==='hrbp'
  return false
+}
+const directiveTargets={
+ director:['manager','supervisor','leader','employee','quality','training','hrbp'],
+ manager:['supervisor','leader','employee','quality','training','hrbp'],
+ supervisor:['leader','employee'],
 }
 const compactOrgText=value=>String(value||'').replace(/\s+/g,'')
 const visibleWorkforce=(workforce,current,role)=>{
@@ -115,20 +135,25 @@ const visiblePeople=(people,current,role)=>{
  return empty
 }
 const visibleLearning=(learning,current,role)=>{
- const empty={version:1,questionBanks:[],sessions:[],assignments:[],suggestions:[],growthReviews:[]}
+ const empty={version:2,questionBanks:[],sessions:[],assignments:[],suggestions:[],growthReviews:[],developmentCases:[]}
  const source=structuredClone(learning||empty)
  if(['director','manager','training'].includes(role))return source
  if(role==='leader'){
   const department=compactOrgText(current.user.department)
   const inScope=item=>item.leader===current.user.name||department.includes(compactOrgText(item.team))
-  return {...source,assignments:source.assignments.filter(inScope),suggestions:source.suggestions.filter(item=>department.includes(compactOrgText(item.team))),growthReviews:source.growthReviews.filter(inScope)}
+  const developmentCases=source.developmentCases.filter(item=>item.initiatorRole==='leader'||item.responderRole==='leader'||department.includes(compactOrgText(item.team)))
+  return {...source,assignments:source.assignments.filter(inScope),suggestions:source.suggestions.filter(item=>department.includes(compactOrgText(item.team))),growthReviews:source.growthReviews.filter(inScope),developmentCases}
  }
  if(role==='employee'){
   const own=item=>item.employeeId===current.user.jobNo||item.employeeName===current.user.name
   const assignments=source.assignments.filter(own),bankIds=new Set(assignments.map(item=>item.bankId))
-  return {...empty,questionBanks:source.questionBanks.filter(item=>item.status==='published'||bankIds.has(item.id)),sessions:source.sessions.filter(item=>bankIds.has(item.bankId)),assignments,suggestions:source.suggestions.filter(own),growthReviews:source.growthReviews.filter(own)}
+  return {...empty,questionBanks:source.questionBanks.filter(item=>item.status==='published'||bankIds.has(item.id)),sessions:source.sessions.filter(item=>bankIds.has(item.bankId)),assignments,suggestions:source.suggestions.filter(own),growthReviews:source.growthReviews.filter(own),developmentCases:source.developmentCases.filter(own)}
  }
- if(role==='quality')return {...empty,questionBanks:source.questionBanks.filter(item=>item.status==='published'),sessions:source.sessions.filter(item=>item.status==='completed')}
+ if(['quality','hrbp','supervisor'].includes(role)){
+  const department=compactOrgText(current.user.department)
+  const developmentCases=source.developmentCases.filter(item=>item.initiatorRole===role||item.responderRole===role||department.includes(compactOrgText(item.team)))
+  return {...empty,questionBanks:role==='quality'?source.questionBanks.filter(item=>item.status==='published'):[],sessions:role==='quality'?source.sessions.filter(item=>item.status==='completed'):[],developmentCases}
+ }
  return empty
 }
 const visibleGovernance=(governance,current,role)=>{
@@ -250,12 +275,31 @@ const requestDeepSeek=async({config,messages,context,maxTokens=1000,systemPrompt
  }finally{clearTimeout(timeout)}
 }
 
+const startupDatabase=await databaseHealth()
+if(databaseConfigured()&&!startupDatabase.connected)throw new Error(`数据库连接失败：${startupDatabase.target} (${startupDatabase.error})`)
+let startupMigrations=[]
+if(startupDatabase.connected&&process.env.AUTO_MIGRATE!=='false')startupMigrations=await migrateBusinessSchema()
+const accessPersistence=await initializeAccessPersistence()
+const statePersistence=await initializeStatePersistence()
+
 const server=http.createServer(async(req,res)=>{
  if(req.method==='OPTIONS') return json(res,204,{})
  const url=new URL(req.url,`http://${req.headers.host}`)
  try{
-  if(req.method==='GET'&&url.pathname==='/api/health') return json(res,200,{ok:true,time:now(),service:'hebei-operations-api',version:API_VERSION})
+  if(req.method==='GET'&&['/health','/api/health'].includes(url.pathname)){
+   const database=await databaseHealth()
+   return json(res,database.connected?200:503,{ok:database.connected,time:now(),service:'hebei-operations-api',version:API_VERSION,database})
+  }
   if(req.method==='GET'&&url.pathname==='/api/ai/status'){requireReadySession(req);return json(res,200,publicAiConfig())}
+  if(req.method==='GET'&&url.pathname==='/api/ai/history'){
+   const current=requireReadySession(req),role=authorizeRuntimeRole(current,url.searchParams.get('role'))
+   return json(res,200,{messages:await aiHistory(current.user.id,role)})
+  }
+  if(req.method==='DELETE'&&url.pathname==='/api/ai/history'){
+   const current=requireReadySession(req),role=authorizeRuntimeRole(current,url.searchParams.get('role'))
+   await clearAiHistory(current.user.id,role)
+   return json(res,200,{ok:true})
+  }
   if(req.method==='GET'&&url.pathname==='/api/ai/settings'){
    const current=requireReadySession(req);requirePermission(current.access,current.user.id,'ai-settings')
    return json(res,200,publicAiConfig())
@@ -263,7 +307,7 @@ const server=http.createServer(async(req,res)=>{
   if(req.method==='PUT'&&url.pathname==='/api/ai/settings'){
    const p=await body(req),current=requireReadySession(req);requirePermission(current.access,current.user.id,'ai-settings')
    const settings=saveAiConfig(p)
-   const s=load();audit(s,current.user.name,`更新AI模型配置：${settings.model} / ${settings.baseUrl}`);save(s)
+   const s=load();audit(s,current.user.name,`更新AI模型配置：${settings.model} / ${settings.baseUrl}`);await save(s)
    return json(res,200,settings)
   }
   if(req.method==='POST'&&url.pathname==='/api/ai/test'){
@@ -277,11 +321,12 @@ const server=http.createServer(async(req,res)=>{
    const current=requireReadySession(req)
    const config=getAiConfig()
    const p=await body(req)
-   authorizeRuntimeRole(current,p.context?.roleId)
+   const role=authorizeRuntimeRole(current,p.context?.roleId)
    const messages=cleanChatMessages(p.messages)
    if(!messages.length||messages[messages.length-1].role!=='user')return json(res,400,{error:'请提供有效的用户消息',code:'INVALID_AI_MESSAGES'})
    if(messages.reduce((sum,message)=>sum+message.content.length,0)>16000)return json(res,413,{error:'对话内容过长，请新建对话后重试',code:'AI_CONTEXT_TOO_LARGE'})
    const result=await requestDeepSeek({config,messages,context:p.context})
+   await appendAiExchange({userId:current.user.id,role,userMessage:messages.at(-1).content,assistantMessage:result.content,model:result.model,usage:result.usage,context:p.context})
    return json(res,200,{message:{role:'assistant',content:result.content},provider:'DeepSeek',model:result.model,usage:result.usage})
   }
   if(req.method==='POST'&&url.pathname==='/api/ai/action-drafts'){
@@ -316,50 +361,101 @@ const server=http.createServer(async(req,res)=>{
    s.tasks.unshift(task)
    addNotice(s,role,`AI行动待执行：${task.title}`,`${task.owner}负责，截止${new Date(task.dueAt).toLocaleString('zh-CN',{hour12:false})}。`,'tasks','high')
    audit(s,current.user.name,`确认AI行动草案并创建${task.id}`)
-   save(s)
+   await save(s)
    return stateJson(res,201,s,current)
   }
+  if(req.method==='POST'&&url.pathname==='/api/tasks/target-suggestion'){
+   const p=await body(req),{role}=requireRuntimeRole(req,p.role,['supervisor','manager','director'])
+   const fallback=systemTargetSuggestion(p)
+   const config=getAiConfig()
+   if(!config.apiKey)return json(res,200,{suggestion:fallback,provider:'system',model:'call-center-lean-rules'})
+   try{
+    const result=await requestDeepSeek({
+     config,maxTokens:650,
+     context:{role:roles[role],scope:p.issueLocation||'所属团队',page:'PDCA任务目标设定'},
+     systemPrompt:`你是呼叫中心精益运营顾问。请根据具体问题给出可量化、可在约定时间验证的任务目标。
+只返回JSON：{"problem":"具体问题","target":"目标描述","metricCode":"指标代码","metricLabel":"指标名称","metricUnit":"单位","metricDirection":"higher或lower","baselineValue":数字,"targetValue":数字,"successCriteria":"验收标准","actionSuggestion":"改善动作","rationale":"建议依据"}。
+指标代码只能从 satisfaction、fcr、repeat_call、cph、responses、busy_rest、quality、marketing、general 中选择。`,
+     messages:[{role:'user',content:JSON.stringify({
+      issueCategory:p.issueCategory,issueLocation:p.issueLocation,problem:p.problem,
+      knownBaseline:p.baselineValue,expectedMetric:p.metricCode,systemFallback:fallback,
+     })}],
+    })
+    const parsed=parseJsonObject(result.content)
+    const suggestion=systemTargetSuggestion({...p,...parsed,metricCode:parsed.metricCode||fallback.metricCode})
+    suggestion.problem=safeText(parsed.problem||fallback.problem,800)
+    suggestion.target=safeText(parsed.target||suggestion.target,500)
+    suggestion.successCriteria=safeText(parsed.successCriteria||suggestion.successCriteria,1000)
+    suggestion.actionSuggestion=safeText(parsed.actionSuggestion||suggestion.actionSuggestion,1000)
+    suggestion.rationale=safeText(parsed.rationale||suggestion.rationale,1000)
+    return json(res,200,{suggestion,provider:'DeepSeek',model:result.model})
+   }catch(error){
+    return json(res,200,{suggestion:fallback,provider:'system',model:'call-center-lean-rules',warning:`大模型建议暂不可用，已使用系统规则：${error.code||'AI_UNAVAILABLE'}`})
+   }
+  }
   if(req.method==='POST'&&url.pathname==='/api/auth/login'){
-   const p=await body(req),user=authenticate(p.jobNo,p.password),session=createSession(req,res,user.id)
+   const p=await body(req),user=await authenticate(p.jobNo,p.password,req.socket.remoteAddress||''),session=createSession(req,res,user.id)
    return json(res,200,sessionPayload(user.id,session.expiresAt))
   }
   if(req.method==='GET'&&url.pathname==='/api/auth/session')return json(res,200,publicSession(req))
   if(req.method==='POST'&&url.pathname==='/api/auth/change-password'){
    const p=await body(req),current=requireSession(req)
-   changePassword(current.user.id,p.currentPassword,p.newPassword)
-   return json(res,200,sessionPayload(current.user.id,current.session.expiresAt))
+   await changePassword(current.user.id,p.currentPassword,p.newPassword)
+   const session=createSession(req,res,current.user.id)
+   return json(res,200,sessionPayload(current.user.id,session.expiresAt))
   }
-  if(req.method==='POST'&&url.pathname==='/api/auth/logout'){destroySession(req,res);return json(res,200,{ok:true})}
+  if(req.method==='POST'&&url.pathname==='/api/auth/logout'){
+   const current=requireSession(req)
+   await revokeSessions(current.user.id)
+   destroySession(req,res)
+   return json(res,200,{ok:true})
+  }
+  if(req.method==='GET'&&url.pathname==='/api/notifications/read'){
+   const current=requireReadySession(req)
+   return json(res,200,{ids:await notificationReadIds(current.user.id)})
+  }
+  if(req.method==='POST'&&url.pathname==='/api/notifications/read'){
+   const current=requireReadySession(req),p=await body(req)
+   const ids=Array.isArray(p.ids)?p.ids.slice(0,500).map(id=>String(id).slice(0,128)):[]
+   await markNotificationRead(current.user.id,ids)
+   return json(res,200,{ids:await notificationReadIds(current.user.id)})
+  }
   if(req.method==='GET'&&url.pathname==='/api/access'){
    const current=requireReadySession(req);requirePermission(current.access,current.user.id,'user-management')
    return json(res,200,publicAccess(current.access))
   }
   if(req.method==='PUT'&&url.pathname==='/api/access/users'){
    const p=await body(req),current=requireReadySession(req)
-   return json(res,200,saveUser(p.user||{},current.user.id))
+   return json(res,200,await saveUser(p.user||{},current.user.id))
   }
   let accessMatch=url.pathname.match(/^\/api\/access\/users\/([^/]+)\/action$/)
   if(req.method==='POST'&&accessMatch){
    const p=await body(req),current=requireReadySession(req)
-   return json(res,200,userAction(accessMatch[1],p.action,current.user.id))
+   return json(res,200,await userAction(accessMatch[1],p.action,current.user.id,p))
   }
   if(req.method==='PUT'&&url.pathname==='/api/access/roles'){
    const p=await body(req),current=requireReadySession(req)
-   return json(res,200,saveRole(p.role||{},current.user.id))
+   return json(res,200,await saveRole(p.role||{},current.user.id))
   }
   accessMatch=url.pathname.match(/^\/api\/access\/roles\/([^/]+)$/)
   if(req.method==='DELETE'&&accessMatch){
    const current=requireReadySession(req)
-   return json(res,200,deleteRole(accessMatch[1],current.user.id))
+   return json(res,200,await deleteRole(accessMatch[1],current.user.id))
   }
   if(req.method==='GET'&&url.pathname==='/api/state'){
    const current=requireReadySession(req)
    return stateJson(res,200,load(),current)
   }
+  if(req.method==='GET'&&url.pathname==='/api/real-data'){
+   const current=requireReadySession(req)
+   const requestedRole=url.searchParams.get('role')
+   const role=current.user.roleId==='system-admin'&&roles[requestedRole]?requestedRole:runtimeRoleByAccessRole[current.user.roleId]
+   return json(res,200,await getRealData({role,jobNo:current.user.jobNo,name:current.user.name}))
+  }
   if(req.method==='POST'&&url.pathname==='/api/reset'){
    const current=requireReadySession(req)
    if(current.user.roleId!=='system-admin')return json(res,403,{error:'仅系统管理员可复位业务演示数据',code:'RESET_FORBIDDEN'})
-   const state=reset();scheduleRefresh();return stateJson(res,200,state,current)
+   const state=await reset();scheduleRefresh();return stateJson(res,200,state,current)
   }
   if(req.method==='GET'&&url.pathname==='/api/reports/catalog'){
    const current=requireReadySession(req);requirePermission(current.access,current.user.id,'reports')
@@ -367,7 +463,8 @@ const server=http.createServer(async(req,res)=>{
   }
   if(req.method==='GET'&&url.pathname==='/api/reports/preview'){
    const current=requireReadySession(req);requirePermission(current.access,current.user.id,'reports')
-   return json(res,200,buildPreview(url.searchParams.get('projectId'),url.searchParams.get('reportType')))
+   const preview=buildPreview(url.searchParams.get('projectId'),url.searchParams.get('reportType'))
+   return json(res,200,await reportPreview(preview))
   }
   if(req.method==='GET'&&url.pathname==='/api/reports/runs'){
    const current=requireReadySession(req);requirePermission(current.access,current.user.id,'reports')
@@ -378,8 +475,9 @@ const server=http.createServer(async(req,res)=>{
    const p=await body(req),current=requireReadySession(req);requirePermission(current.access,current.user.id,'reports')
    const requestedRole=authorizeRuntimeRole(current,p.requestedRole)
    const s=load()
-   const run=createRun({dataDir,state:s,projectId:p.projectId,reportType:p.reportType,requestedBy:current.user.name,requestedRole,now})
-   save(s)
+   const preview=await reportPreview(buildPreview(p.projectId,p.reportType))
+   const run=createRun({dataDir,state:s,projectId:p.projectId,reportType:p.reportType,requestedBy:current.user.name,requestedRole,now,preview})
+   await save(s)
    return json(res,201,run)
   }
   let reportMatch=url.pathname.match(/^\/api\/reports\/runs\/([^/]+)$/)
@@ -395,7 +493,7 @@ const server=http.createServer(async(req,res)=>{
    if(!run)return json(res,404,{error:'报表运行记录不存在'})
    const target=artifactPath(dataDir,run)
    if(!target||!fs.existsSync(target)||!fs.statSync(target).isFile())return json(res,404,{error:'报表文件不存在，请重新运行'})
-   recordDownload({state:s,run,requestedBy:current.user.name,now});save(s)
+   recordDownload({state:s,run,requestedBy:current.user.name,now});await save(s)
    const asciiName=`report-${run.id}.csv`
    res.writeHead(200,{'content-type':'text/csv; charset=utf-8','content-disposition':`attachment; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(run.artifact.fileName)}`,'cache-control':'no-store','x-content-type-options':'nosniff','access-control-allow-origin':'*'})
    return fs.createReadStream(target).pipe(res)
@@ -403,7 +501,7 @@ const server=http.createServer(async(req,res)=>{
   if(req.method==='POST'&&url.pathname==='/api/refresh'){
    const {current,actor}=requireRuntimeRole(req,'director',['director'])
    const s=load();s.meta.batchNo+=1;s.meta.lastRefresh=now();s.meta.nextRefresh=new Date(Date.now()+30*60*1000).toISOString();
-   addNotice(s,'director',`半小时批次 #${s.meta.batchNo} 刷新完成`,'四类预警规则已完成扫描，数据更新时间已推进。','reports','normal');audit(s,actor,`执行半小时刷新批次 #${s.meta.batchNo}`);save(s);return stateJson(res,200,s,current)
+   addNotice(s,'director',`半小时批次 #${s.meta.batchNo} 刷新完成`,'四类预警规则已完成扫描，数据更新时间已推进。','reports','normal');audit(s,actor,`执行半小时刷新批次 #${s.meta.batchNo}`);await save(s);return stateJson(res,200,s,current)
   }
   const learningBankMatch=url.pathname.match(/^\/api\/learning\/banks\/([^/]+)\/action$/)
   if(req.method==='POST'&&learningBankMatch){
@@ -427,7 +525,7 @@ const server=http.createServer(async(req,res)=>{
     if(s.learning.assignments.some(item=>item.bankId===bank.id&&!['closed'].includes(item.status)))return json(res,409,{error:'仍有未关闭学习任务使用该题库，不能停用'})
     bank.status='retired';bank.updatedAt=now();bank.history.unshift({at:now(),actor,action:'题库版本停用'})
    }else return json(res,400,{error:'不支持的题库动作'})
-   audit(s,actor,`${bank.id}：${bank.history[0].action}`);save(s);return stateJson(res,200,s,current)
+   audit(s,actor,`${bank.id}：${bank.history[0].action}`);await save(s);return stateJson(res,200,s,current)
   }
   const learningSessionMatch=url.pathname.match(/^\/api\/learning\/sessions\/([^/]+)\/action$/)
   if(req.method==='POST'&&learningSessionMatch){
@@ -449,7 +547,7 @@ const server=http.createServer(async(req,res)=>{
     session.attendanceRate=attendanceRate;session.status='completed';session.history.unshift({at:now(),actor,action:`场次完成，出勤率${attendanceRate}%达到目标`})
     addNotice(s,'manager',`培训场次完成：${session.title}`,`${session.enrolled}人 · 出勤率${attendanceRate}% · 进入个人考试与效果验证。`,'command','normal')
    }else return json(res,400,{error:'不支持的课程场次动作'})
-   audit(s,actor,`${session.id}：${session.history[0].action}`);save(s);return stateJson(res,200,s,current)
+   audit(s,actor,`${session.id}：${session.history[0].action}`);await save(s);return stateJson(res,200,s,current)
   }
   if(req.method==='POST'&&url.pathname==='/api/learning/assignments'){
    const p=await body(req),{current,actor}=requireRuntimeRole(req,p.role,['training'])
@@ -465,7 +563,7 @@ const server=http.createServer(async(req,res)=>{
    s.learning.assignments.unshift(assignment)
    addNotice(s,'employee',`新的学习任务：${title}`,`${assignment.id} · 截止${new Date(assignment.dueAt).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false})} · 目标${targetScore}分。`,'growth','high')
    addNotice(s,'leader',`员工学习任务已下发：${employee.name}`,`${title}完成并达标后，将由${employee.leader}验证业务改善。`,'growth','normal')
-   audit(s,actor,`创建个人学习任务${assignment.id}`);save(s);return stateJson(res,201,s,current)
+   audit(s,actor,`创建个人学习任务${assignment.id}`);await save(s);return stateJson(res,201,s,current)
   }
   const learningAssignmentMatch=url.pathname.match(/^\/api\/learning\/assignments\/([^/]+)\/action$/)
   if(req.method==='POST'&&learningAssignmentMatch){
@@ -505,7 +603,7 @@ const server=http.createServer(async(req,res)=>{
     addNotice(s,'employee',`学习任务已闭环：${assignment.title}`,comment,'growth','normal')
     addNotice(s,'training',`学习效果验证通过：${assignment.employeeName}`,`${assignment.title} · ${comment}`,'growth','normal')
    }else return json(res,400,{error:'不支持的个人学习任务动作'})
-   audit(s,actor,`${assignment.id}：${assignment.history[0].action}`);save(s);return stateJson(res,200,s,current)
+   audit(s,actor,`${assignment.id}：${assignment.history[0].action}`);await save(s);return stateJson(res,200,s,current)
   }
   if(req.method==='POST'&&url.pathname==='/api/learning/suggestions'){
    const p=await body(req),{current,actor}=requireRuntimeRole(req,p.role,['employee'])
@@ -518,7 +616,7 @@ const server=http.createServer(async(req,res)=>{
    const day=new Date().toISOString().slice(0,10).replaceAll('-',''),sequence=String(s.learning.suggestions.filter(item=>item.id.startsWith(`SG-${day}-`)).length+1).padStart(3,'0')
    const suggestion={id:`SG-${day}-${sequence}`,employeeId:employee.jobNo,employeeName:employee.name,team:employee.team,category,title,detail,status:'pending_training',owner:'培训主管 刘颖',response:'',createdAt:now(),history:[{at:now(),actor,action:'提交一线业务与学习改进建议'}]}
    s.learning.suggestions.unshift(suggestion);addNotice(s,'training',`一线员工新建议：${title}`,`${employee.name} · ${employee.team} · 请在1个工作日内受理。`,'growth','normal')
-   audit(s,actor,`提交员工建议${suggestion.id}`);save(s);return stateJson(res,201,s,current)
+   audit(s,actor,`提交员工建议${suggestion.id}`);await save(s);return stateJson(res,201,s,current)
   }
   const learningSuggestionMatch=url.pathname.match(/^\/api\/learning\/suggestions\/([^/]+)\/action$/)
   if(req.method==='POST'&&learningSuggestionMatch){
@@ -538,7 +636,7 @@ const server=http.createServer(async(req,res)=>{
     suggestion.status='closed';suggestion.response=`${suggestion.response}；落地结果：${response}`;suggestion.history.unshift({at:now(),actor,action:`建议落地并关闭：${response}`})
     addNotice(s,'employee',`员工建议已落地：${suggestion.title}`,response,'growth','normal')
    }else return json(res,400,{error:'不支持的员工建议动作'})
-   audit(s,actor,`${suggestion.id}：${suggestion.history[0].action}`);save(s);return stateJson(res,200,s,current)
+   audit(s,actor,`${suggestion.id}：${suggestion.history[0].action}`);await save(s);return stateJson(res,200,s,current)
   }
   const growthReviewMatch=url.pathname.match(/^\/api\/learning\/growth-reviews\/([^/]+)\/action$/)
   if(req.method==='POST'&&growthReviewMatch){
@@ -561,7 +659,66 @@ const server=http.createServer(async(req,res)=>{
     addNotice(s,'employee',`${review.milestone}日成长评估已完成`,`${review.trainingComment}；班长：${comment}`,'growth','normal')
     addNotice(s,'training',`${review.employeeName}${review.milestone}日成长评估闭环`,comment,'growth','normal')
    }else return json(res,400,{error:'不支持的成长评估动作'})
-   audit(s,actor,`${review.id}：${review.history[0].action}`);save(s);return stateJson(res,200,s,current)
+   audit(s,actor,`${review.id}：${review.history[0].action}`);await save(s);return stateJson(res,200,s,current)
+  }
+  if(req.method==='POST'&&url.pathname==='/api/development/cases'){
+   const p=await body(req),{current,role,actor}=requireRuntimeRole(req,p.role,['employee','leader','supervisor','quality','training','hrbp'])
+   const s=load(),type=safeText(p.type,20),title=safeText(p.title,100),reason=safeText(p.reason,1200),goal=safeText(p.goal,1200)
+   const responderRole=safeText(p.responderRole,30),dueAt=new Date(p.dueAt)
+   if(!['training','interview'].includes(type)||!title||reason.length<10||goal.length<10)return json(res,400,{error:'请完整填写任务类型、标题、至少10字的发起原因和目标'})
+   if(!Number.isFinite(dueAt.getTime())||dueAt.getTime()<=Date.now())return json(res,400,{error:'完成时限必须晚于当前时间'})
+   const employee=s.workforce.employees.find(item=>item.jobNo===p.employeeId||item.id===p.employeeId)
+   if(!employee||employee.role!=='employee')return json(res,404,{error:'未找到对应客服专员'})
+   if(role==='employee'){
+    if(current.user.roleId!=='system-admin'&&employee.jobNo!==current.user.jobNo&&employee.name!==current.user.name)return json(res,403,{error:'客服专员只能为本人发起需求'})
+    if(!['leader','supervisor','quality','training','hrbp'].includes(responderRole))return json(res,400,{error:'请选择班长、主管、质检、培训或HRBP作为责任岗位'})
+   }else if(responderRole!=='employee')return json(res,400,{error:'管理岗位发起的培训或面谈需由客服专员本人反馈结果'})
+   if(s.learning.developmentCases.some(item=>item.employeeId===employee.jobNo&&item.title===title&&item.status!=='closed'))return json(res,409,{error:'该员工已有相同标题的处理中任务'})
+   const day=new Date().toISOString().slice(0,10).replaceAll('-',''),sequence=String(s.learning.developmentCases.filter(item=>item.id.startsWith(`DV-${day}-`)).length+1).padStart(3,'0')
+   const initiatorName=current.user.roleId==='system-admin'?(role==='employee'?employee.name:roles[role]):actor
+   const responderName=responderRole==='employee'?employee.name:responderRole==='leader'?employee.leader:roles[responderRole]
+   const record={
+    id:`DV-${day}-${sequence}`,type,title,reason,goal,employeeId:employee.jobNo,employeeName:employee.name,team:employee.team,
+    initiatorRole:role,initiatorName,responderRole,responderName,ownerRole:responderRole,verificationRole:role,
+    status:'pending_acceptance',dueAt:dueAt.toISOString(),createdAt:now(),acknowledgement:'',result:'',verificationComment:'',
+    history:[{at:now(),actor:initiatorName,action:`发起${type==='training'?'培训':'面谈'}${role==='employee'?'需求':'任务'}，指定${responderName}接收并反馈结果`}],
+   }
+   s.learning.developmentCases.unshift(record)
+   addNotice(s,responderRole,`${type==='training'?'培训':'面谈'}待接收：${title}`,`${employee.name} · ${employee.team} · 发起人${initiatorName}`,'growth','high')
+   audit(s,initiatorName,`发起培训面谈任务${record.id}`);await save(s);return stateJson(res,201,s,current)
+  }
+  const developmentCaseMatch=url.pathname.match(/^\/api\/development\/cases\/([^/]+)\/action$/)
+  if(req.method==='POST'&&developmentCaseMatch){
+   const p=await body(req),{current,role,actor}=requireRuntimeRole(req,p.role,['employee','leader','supervisor','quality','training','hrbp'])
+   const s=load(),record=s.learning.developmentCases.find(item=>item.id===developmentCaseMatch[1])
+   if(!record)return json(res,404,{error:'培训或面谈任务不存在'})
+   if(role==='employee'&&current.user.roleId!=='system-admin'&&record.employeeId!==current.user.jobNo&&record.employeeName!==current.user.name)return json(res,403,{error:'客服专员只能处理与本人有关的任务'})
+   const action=safeText(p.action,30),comment=safeText(p.comment,1200)
+   const actionActor=current.user.roleId==='system-admin'?(role==='employee'?record.employeeName:roles[role]):actor
+   if(comment.length<5)return json(res,400,{error:'处理说明至少需要5个字'})
+   if(action==='accept'){
+    if(record.status!=='pending_acceptance'||record.ownerRole!==role)return json(res,409,{error:'仅当前责任岗位可以接收待回执任务'})
+    record.status='in_progress';record.acknowledgement=comment
+    record.history.unshift({at:now(),actor:actionActor,action:`接收任务并回执：${comment}`})
+    addNotice(s,record.initiatorRole,`${record.title}已被接收`,`${actionActor}：${comment}`,'growth','normal')
+   }else if(action==='submit'){
+    if(!['in_progress','returned'].includes(record.status)||record.ownerRole!==role)return json(res,409,{error:'仅当前责任岗位可以提交执行结果'})
+    if(comment.length<10)return json(res,400,{error:'结果反馈至少需要10个字'})
+    record.status='pending_verification';record.ownerRole=record.verificationRole;record.result=comment
+    record.history.unshift({at:now(),actor:actionActor,action:`提交结果，等待发起人验收：${comment}`})
+    addNotice(s,record.verificationRole,`${record.title}待发起人验收`,`${actor}已提交结果，请按“谁发起谁验收”完成确认。`,'growth','high')
+   }else if(action==='verify_success'){
+    if(record.status!=='pending_verification'||record.verificationRole!==role)return json(res,409,{error:'仅任务发起岗位可以验收'})
+    record.status='closed';record.ownerRole=role;record.verificationComment=comment
+    record.history.unshift({at:now(),actor:actionActor,action:`发起人验收通过并关闭：${comment}`})
+    addNotice(s,record.responderRole,`${record.title}已验收关闭`,`${actionActor}：${comment}`,'growth','normal')
+   }else if(action==='verify_return'){
+    if(record.status!=='pending_verification'||record.verificationRole!==role)return json(res,409,{error:'仅任务发起岗位可以退回'})
+    record.status='returned';record.ownerRole=record.responderRole;record.verificationComment=comment
+    record.history.unshift({at:now(),actor:actionActor,action:`验收未通过，退回补充：${comment}`})
+    addNotice(s,record.responderRole,`${record.title}验收退回`,comment,'growth','high')
+   }else return json(res,400,{error:'不支持的培训面谈任务动作'})
+   audit(s,actionActor,`${record.id}：${record.history[0].action}`);await save(s);return stateJson(res,200,s,current)
   }
   const trainingStageMatch=url.pathname.match(/^\/api\/training\/cohorts\/([^/]+)\/stages\/([^/]+)\/action$/)
   if(req.method==='POST'&&trainingStageMatch){
@@ -601,14 +758,14 @@ const server=http.createServer(async(req,res)=>{
     }
     lifecycle.personCount=passedTrainees.length
     lifecycle.employeeIds=passedTrainees.map(item=>item.id)
-    lifecycle.status='hrbp_preparing';lifecycle.ownerRole='hrbp';lifecycle.owner='HRBP经理 陈静'
+    lifecycle.status='hrbp_preparing';lifecycle.ownerRole='hrbp';lifecycle.owner='HRBP经理 王丽伟'
     lifecycle.history.unshift({at:now(),actor,action:`培训通关率达标，推送${passedTrainees.length}名合格学员至HRBP入列准备`})
     addNotice(s,'hrbp',`新工合格名单待入列：${cohort.name}`,`${passedTrainees.length}名学员已通关，请完成合同、体检、账号、排班和班组核验。`,'command','high')
    }
    cohort.status=cohort.stages.every(item=>item.progress===100)?'completed':'training'
    cohort.history.unshift({at:now(),actor,action:`${stage.name}进度更新至${progress}%${evidence?`，证据：${evidence}`:''}`})
    audit(s,actor,`更新培训班${cohort.id}的${stage.name}至${progress}%`)
-   save(s)
+   await save(s)
    return stateJson(res,200,s,current)
   }
   const trainingAssessmentMatch=url.pathname.match(/^\/api\/training\/trainees\/([^/]+)\/assessment$/)
@@ -639,7 +796,7 @@ const server=http.createServer(async(req,res)=>{
    trainee.riskLevel=trainee.attendance<95||weakest<70?'high':weakest<80||trainee.profileComplete<90?'attention':'normal'
    trainee.history.unshift({at:now(),actor,action:`更新能力评估：理论${trainee.theoryScore}、实操${trainee.practiceScore}、场景${trainee.scenarioScore}，形成帮扶计划`})
    audit(s,actor,`更新学员${trainee.name}能力评估`)
-   save(s)
+   await save(s)
    return stateJson(res,200,s,current)
   }
   if(req.method==='POST'&&url.pathname==='/api/training/programs'){
@@ -657,7 +814,7 @@ const server=http.createServer(async(req,res)=>{
    s.training.programs.unshift(program)
    addNotice(s,'training',`岗中专项已创建：${program.title}`,`${program.id} · ${program.audience}${program.audienceCount}人 · 覆盖目标${program.targetCoverage}%。`,'training','normal')
    audit(s,actor,`创建岗中培训专项${program.id}`)
-   save(s)
+   await save(s)
    return stateJson(res,201,s,current)
   }
   const trainingProgramMatch=url.pathname.match(/^\/api\/training\/programs\/([^/]+)\/action$/)
@@ -702,7 +859,7 @@ const server=http.createServer(async(req,res)=>{
     }
    }else return json(res,400,{error:'培训专项动作不正确'})
    audit(s,actor,`${action==='quality_verify'?'验证':'更新'}岗中培训专项${program.id}`)
-   save(s)
+   await save(s)
    return stateJson(res,200,s,current)
   }
   if(req.method==='POST'&&url.pathname==='/api/training/reports'){
@@ -730,7 +887,7 @@ const server=http.createServer(async(req,res)=>{
    s.trainingReports.unshift(report)
    addNotice(s,'manager','今日培训日报待查阅',`${report.id} · 预计通关率${report.metrics.passForecast}% · ${report.risks.length}项风险需关注。`,'command','high')
    audit(s,actor,`提交培训日报${report.id}至客服经理`)
-   save(s)
+   await save(s)
    return stateJson(res,201,s,current)
   }
   let trainingReportMatch=url.pathname.match(/^\/api\/training\/reports\/([^/]+)\/review$/)
@@ -744,7 +901,7 @@ const server=http.createServer(async(req,res)=>{
    s.notifications.filter(notice=>notice.role==='manager'&&notice.desc.includes(report.id)).forEach(notice=>notice.read=true)
    addNotice(s,'training',`经理已阅：${report.id}`,`${actor}：${report.reviewComment}`,'command','normal')
    audit(s,actor,`查阅培训日报${report.id}并回传培训岗`)
-   save(s)
+   await save(s)
    return stateJson(res,200,s,current)
   }
   if(req.method==='POST'&&url.pathname==='/api/hrbp/cases'){
@@ -769,7 +926,7 @@ const server=http.createServer(async(req,res)=>{
    s.hrbpCases.unshift(record)
    addNotice(s,'hrbp',`沟通任务已创建：${record.name}`,`${record.id} · 风险${record.riskScore}分 · ${record.due}前完成首次沟通。`,'tasks','high')
    audit(s,actor,`创建人员稳定沟通任务${record.id}`)
-   save(s)
+   await save(s)
    return stateJson(res,201,s,current)
   }
   const hrbpCaseMatch=url.pathname.match(/^\/api\/hrbp\/cases\/([^/]+)\/action$/)
@@ -816,7 +973,7 @@ const server=http.createServer(async(req,res)=>{
     s.notifications.filter(item=>item.role==='hrbp'&&item.desc.includes(record.id)).forEach(item=>item.read=true)
    }else return json(res,400,{error:'不支持的人员稳定任务动作'})
    audit(s,actor,`${record.id}：${record.history.at(-1)?.action||action}`)
-   save(s)
+   await save(s)
    return stateJson(res,200,s,current)
   }
   const staffingMatch=url.pathname.match(/^\/api\/hrbp\/staffing\/([^/]+)\/action$/)
@@ -838,12 +995,12 @@ const server=http.createServer(async(req,res)=>{
     addNotice(s,'manager',`补员方案待审批：${plan.project}`,`${plan.id} · 编制缺口${plan.gap}人 · 到岗${plan.onboarded}/${plan.hiringTarget}人。`,'tasks','high')
    }else if(action==='manager_approve'){
     if(role!=='manager'||plan.status!=='manager_pending')return reject('仅经理可审批待审补员方案')
-    plan.status='active';plan.owner='HRBP经理 陈静';plan.managerComment=safeText(p.comment,500)||'同意按招聘渠道计划推进，周度复盘到岗差距。'
+    plan.status='active';plan.owner='HRBP经理 王丽伟';plan.managerComment=safeText(p.comment,500)||'同意按招聘渠道计划推进，周度复盘到岗差距。'
     plan.history.unshift({at:now(),actor,action:`批准补员方案：${plan.managerComment}`})
     addNotice(s,'hrbp',`补员方案已批准：${plan.project}`,plan.managerComment,'command','normal')
    }else if(action==='manager_return'){
     if(role!=='manager'||plan.status!=='manager_pending')return reject('仅经理可退回待审补员方案')
-    plan.status='returned_hrbp';plan.owner='HRBP经理 陈静';plan.managerComment=safeText(p.comment,500)||'请补充渠道产出、到岗时间和业务风险。'
+    plan.status='returned_hrbp';plan.owner='HRBP经理 王丽伟';plan.managerComment=safeText(p.comment,500)||'请补充渠道产出、到岗时间和业务风险。'
     plan.history.unshift({at:now(),actor,action:`退回补充：${plan.managerComment}`})
     addNotice(s,'hrbp',`补员方案退回：${plan.project}`,plan.managerComment,'command','high')
    }else if(action==='close'){
@@ -853,7 +1010,7 @@ const server=http.createServer(async(req,res)=>{
     if(plan.actualOccupancy<plan.targetOccupancy||plan.gap>0)return reject(`当前在岗满足率${plan.actualOccupancy}%、缺口${plan.gap}人，未达到${plan.targetOccupancy}%目标，不能关闭`)
     plan.status='closed';plan.owner='已关闭';plan.history.unshift({at:now(),actor,action:'在岗满足率与编制目标均达标，计划关闭'})
    }else return json(res,400,{error:'不支持的编制招聘动作'})
-   audit(s,actor,`${plan.id}：${plan.history[0].action}`);save(s);return stateJson(res,200,s,current)
+   audit(s,actor,`${plan.id}：${plan.history[0].action}`);await save(s);return stateJson(res,200,s,current)
   }
   if(req.method==='POST'&&url.pathname==='/api/hrbp/lifecycle'){
    const p=await body(req),{current,actor}=requireRuntimeRole(req,p.role,['hrbp'])
@@ -865,9 +1022,9 @@ const server=http.createServer(async(req,res)=>{
    if(!/^\d{4}-\d{2}-\d{2}$/.test(effectiveDate)||!detail)return json(res,400,{error:'生效日期和事实说明不能为空'})
    if(s.people.lifecycle.some(item=>item.employeeId===employee.id&&item.status!=='closed'))return json(res,409,{error:'该员工已有未关闭的人事异动'})
    const sequence=String(s.people.lifecycle.length+1).padStart(3,'0')
-   const record={id:`LC-${new Date().toISOString().slice(0,10).replaceAll('-','')}-${sequence}`,type,title:`${employee.name}${type==='transfer'?'组织调动':'离职办理'}`,employeeId:employee.id,employeeName:employee.name,personCount:1,employeeIds:[employee.id],source:'HRBP发起',fromOrg:employee.team,toOrg:type==='transfer'?safeText(p.toOrg,80):'离职',effectiveDate,status:'hrbp_preparing',ownerRole:'hrbp',owner:'HRBP经理 陈静',detail,managerComment:'',result:'',checklist:{contract:type==='transfer',medical:true,account:false,shift:false,team:false},history:[{at:now(),actor,action:`创建${type==='transfer'?'员工调动':'离职办理'}事项`}]}
+   const record={id:`LC-${new Date().toISOString().slice(0,10).replaceAll('-','')}-${sequence}`,type,title:`${employee.name}${type==='transfer'?'组织调动':'离职办理'}`,employeeId:employee.id,employeeName:employee.name,personCount:1,employeeIds:[employee.id],source:'HRBP发起',fromOrg:employee.team,toOrg:type==='transfer'?safeText(p.toOrg,80):'离职',effectiveDate,status:'hrbp_preparing',ownerRole:'hrbp',owner:'HRBP经理 王丽伟',detail,managerComment:'',result:'',checklist:{contract:type==='transfer',medical:true,account:false,shift:false,team:false},history:[{at:now(),actor,action:`创建${type==='transfer'?'员工调动':'离职办理'}事项`}]}
    if(type==='transfer'&&!record.toOrg)return json(res,400,{error:'员工调动必须选择目标组织'})
-   s.people.lifecycle.unshift(record);audit(s,actor,`创建人事异动${record.id}`);save(s);return stateJson(res,201,s,current)
+   s.people.lifecycle.unshift(record);audit(s,actor,`创建人事异动${record.id}`);await save(s);return stateJson(res,201,s,current)
   }
   const lifecycleMatch=url.pathname.match(/^\/api\/hrbp\/lifecycle\/([^/]+)\/action$/)
   if(req.method==='POST'&&lifecycleMatch){
@@ -878,7 +1035,7 @@ const server=http.createServer(async(req,res)=>{
    if(action==='prepare'){
     if(role!=='hrbp'||!['hrbp_preparing','returned_hrbp'].includes(record.status))return reject('仅HRBP可补全准备事项')
     for(const field of Object.keys(record.checklist))if(p[field]!==undefined)record.checklist[field]=Boolean(p[field])
-    record.status='hrbp_preparing';record.ownerRole='hrbp';record.owner='HRBP经理 陈静'
+    record.status='hrbp_preparing';record.ownerRole='hrbp';record.owner='HRBP经理 王丽伟'
     record.history.unshift({at:now(),actor,action:`更新办理清单：${Object.values(record.checklist).filter(Boolean).length}/5项完成`})
    }else if(action==='submit_manager'){
     if(role!=='hrbp'||record.status!=='hrbp_preparing')return reject('当前事项不可提交经理审批')
@@ -889,12 +1046,12 @@ const server=http.createServer(async(req,res)=>{
     addNotice(s,'manager',`人事事项待审批：${record.title}`,`${record.id} · ${record.fromOrg} → ${record.toOrg} · ${record.effectiveDate}生效。`,'tasks','high')
    }else if(action==='manager_approve'){
     if(role!=='manager'||record.status!=='manager_pending')return reject('仅经理可审批待审人事事项')
-    record.status='hrbp_execute';record.ownerRole='hrbp';record.owner='HRBP经理 陈静';record.managerComment=safeText(p.comment,500)||'同意办理，请按生效日更新组织、账号和排班。'
+    record.status='hrbp_execute';record.ownerRole='hrbp';record.owner='HRBP经理 王丽伟';record.managerComment=safeText(p.comment,500)||'同意办理，请按生效日更新组织、账号和排班。'
     record.history.unshift({at:now(),actor,action:`审批通过：${record.managerComment}`})
     addNotice(s,'hrbp',`人事事项已批准：${record.title}`,record.managerComment,'command','high')
    }else if(action==='manager_return'){
     if(role!=='manager'||record.status!=='manager_pending')return reject('仅经理可退回待审人事事项')
-    record.status='returned_hrbp';record.ownerRole='hrbp';record.owner='HRBP经理 陈静';record.managerComment=safeText(p.comment,500)||'请补充组织承接和员工确认记录。'
+    record.status='returned_hrbp';record.ownerRole='hrbp';record.owner='HRBP经理 王丽伟';record.managerComment=safeText(p.comment,500)||'请补充组织承接和员工确认记录。'
     record.history.unshift({at:now(),actor,action:`退回HRBP补充：${record.managerComment}`})
     addNotice(s,'hrbp',`人事事项被退回：${record.title}`,record.managerComment,'command','high')
    }else if(action==='complete'){
@@ -918,7 +1075,7 @@ const server=http.createServer(async(req,res)=>{
     record.status='closed';record.ownerRole='closed';record.owner='已关闭';record.history.unshift({at:now(),actor,action:record.result})
     addNotice(s,'manager',`人事事项已生效：${record.title}`,record.result,'command','normal')
    }else return json(res,400,{error:'不支持的人事事项动作'})
-   audit(s,actor,`${record.id}：${record.history[0].action}`);save(s);return stateJson(res,200,s,current)
+   audit(s,actor,`${record.id}：${record.history[0].action}`);await save(s);return stateJson(res,200,s,current)
   }
   const laborMatch=url.pathname.match(/^\/api\/hrbp\/labor\/([^/]+)\/action$/)
   if(req.method==='POST'&&laborMatch){
@@ -928,7 +1085,7 @@ const server=http.createServer(async(req,res)=>{
    const action=safeText(p.action,40),result=safeText(p.result,1200),reject=message=>json(res,409,{error:message})
    if(action==='start'){
     if(role!=='hrbp'||record.status!=='hrbp_todo')return reject('仅HRBP可开始待办劳动关系事项')
-    record.status='hrbp_doing';record.ownerRole='hrbp';record.owner='HRBP经理 陈静';record.history.unshift({at:now(),actor,action:'开始事实调查、员工沟通和制度核对'})
+    record.status='hrbp_doing';record.ownerRole='hrbp';record.owner='HRBP经理 王丽伟';record.history.unshift({at:now(),actor,action:'开始事实调查、员工沟通和制度核对'})
    }else if(action==='escalate_manager'){
     if(role!=='hrbp'||record.status!=='hrbp_doing'||!result)return reject('HRBP处理中且填写调查结论后方可升级经理')
     record.status='manager_pending';record.ownerRole='manager';record.owner='运营经理';record.result=result;record.history.unshift({at:now(),actor,action:`调查完成，升级经理决策：${result}`})
@@ -943,7 +1100,7 @@ const server=http.createServer(async(req,res)=>{
     record.status='closed';record.ownerRole='closed';record.owner='已关闭';record.result=result;record.history.unshift({at:now(),actor,action:`形成处理结论并关闭：${result}`})
     addNotice(s,role==='manager'?'hrbp':'manager',`劳动关系事项已关闭：${record.title}`,result,'command','normal')
    }else return json(res,400,{error:'不支持的劳动关系动作'})
-   audit(s,actor,`${record.id}：${record.history[0].action}`);save(s);return stateJson(res,200,s,current)
+   audit(s,actor,`${record.id}：${record.history[0].action}`);await save(s);return stateJson(res,200,s,current)
   }
   const costMatch=url.pathname.match(/^\/api\/hrbp\/costs\/([^/]+)\/action$/)
   if(req.method==='POST'&&costMatch){
@@ -956,7 +1113,7 @@ const server=http.createServer(async(req,res)=>{
    record.forecast=forecast;record.actual=actual;record.gap=forecast-record.budget;record.updatedAt=now()
    record.history.unshift({at:now(),actor,action:`更新实际成本${actual}元、月末预测${forecast}元，预算差异${record.gap}元`})
    if(record.gap>0)addNotice(s,'manager',`人员成本预计超预算：${record.project}`,`${record.month}预测超预算${record.gap}元，请关注加班、招聘与到岗结构。`,'command','high')
-   audit(s,actor,`更新人员成本预测${record.id}`);save(s);return stateJson(res,200,s,current)
+   audit(s,actor,`更新人员成本预测${record.id}`);await save(s);return stateJson(res,200,s,current)
   }
   if(req.method==='POST'&&url.pathname==='/api/hrbp/interviews'){
    const p=await body(req),{current,actor}=requireRuntimeRole(req,p.role,['hrbp'])
@@ -965,9 +1122,9 @@ const server=http.createServer(async(req,res)=>{
    if(!['probation','retention','exit'].includes(p.type))return json(res,400,{error:'访谈类型不正确'})
    const scheduledAt=normalizeDueAt(p.scheduledAt),followUpAt=normalizeDueAt(p.followUpAt)
    const sequence=String(s.people.interviews.length+1).padStart(3,'0')
-   const record={id:`INT-${new Date().toISOString().slice(0,10).replaceAll('-','')}-${sequence}`,type:p.type,employeeId:employee.jobNo,employeeName:employee.name,team:employee.team,interviewer:'HRBP经理 陈静',scheduledAt,followUpAt,status:'planned',conclusion:'',commitments:[],linkedCaseId:safeText(p.linkedCaseId,50),history:[{at:now(),actor,action:'创建结构化员工访谈计划'}]}
+   const record={id:`INT-${new Date().toISOString().slice(0,10).replaceAll('-','')}-${sequence}`,type:p.type,employeeId:employee.jobNo,employeeName:employee.name,team:employee.team,interviewer:'HRBP经理 王丽伟',scheduledAt,followUpAt,status:'planned',conclusion:'',commitments:[],linkedCaseId:safeText(p.linkedCaseId,50),history:[{at:now(),actor,action:'创建结构化员工访谈计划'}]}
    s.people.interviews.unshift(record);addNotice(s,'hrbp',`员工访谈已安排：${employee.name}`,`${record.id} · ${new Date(scheduledAt).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'})}`,'command','normal')
-   audit(s,actor,`创建员工访谈${record.id}`);save(s);return stateJson(res,201,s,current)
+   audit(s,actor,`创建员工访谈${record.id}`);await save(s);return stateJson(res,201,s,current)
   }
   const interviewMatch=url.pathname.match(/^\/api\/hrbp\/interviews\/([^/]+)\/action$/)
   if(req.method==='POST'&&interviewMatch){
@@ -985,7 +1142,7 @@ const server=http.createServer(async(req,res)=>{
     if(record.status!=='followup_due')return json(res,409,{error:'仅待回访访谈可以关闭'})
     record.status='closed';record.conclusion=`${record.conclusion}；回访：${conclusion}`;record.history.unshift({at:now(),actor,action:`完成承诺回访并关闭：${conclusion}`})
    }else return json(res,400,{error:'不支持的访谈动作'})
-   audit(s,actor,`${record.id}：${record.history[0].action}`);save(s);return stateJson(res,200,s,current)
+   audit(s,actor,`${record.id}：${record.history[0].action}`);await save(s);return stateJson(res,200,s,current)
   }
   const shiftPlanMatch=url.pathname.match(/^\/api\/governance\/shift-plans\/([^/]+)\/action$/)
   if(req.method==='POST'&&shiftPlanMatch){
@@ -1009,7 +1166,7 @@ const server=http.createServer(async(req,res)=>{
     record.status='returned';record.ownerRole='supervisor';record.owner='前台客服主管';record.result=comment
     record.history.push({at:now(),actor,action:`退回主管调整：${comment}`});addNotice(s,'supervisor',`排班计划被退回：${record.area}`,comment,'workforce','high')
    }else return json(res,400,{error:'不支持的排班计划动作'})
-   audit(s,actor,`${record.id}：${record.history.at(-1).action}`);save(s);return stateJson(res,200,s,current)
+   audit(s,actor,`${record.id}：${record.history.at(-1).action}`);await save(s);return stateJson(res,200,s,current)
   }
   const skillRouteMatch=url.pathname.match(/^\/api\/governance\/skill-routes\/([^/]+)\/action$/)
   if(req.method==='POST'&&skillRouteMatch){
@@ -1042,7 +1199,7 @@ const server=http.createServer(async(req,res)=>{
      record.history.push({at:now(),actor,action:`效果未达标，返回主管改进：${record.result}`});addNotice(s,'supervisor',`技能调度未达目标：${record.toSkill}`,record.result,'workforce','high')
     }
    }else return json(res,400,{error:'不支持的技能路由动作'})
-   audit(s,actor,`${record.id}：${record.history.at(-1).action}`);save(s);return stateJson(res,200,s,current)
+   audit(s,actor,`${record.id}：${record.history.at(-1).action}`);await save(s);return stateJson(res,200,s,current)
   }
   const budgetMatch=url.pathname.match(/^\/api\/governance\/budgets\/([^/]+)\/action$/)
   if(req.method==='POST'&&budgetMatch){
@@ -1060,7 +1217,7 @@ const server=http.createServer(async(req,res)=>{
     if(role!=='director'||record.status!=='director_pending'||!comment)return json(res,409,{error:'总监退回必须填写调整要求'})
     record.status='returned';record.ownerRole='manager';record.owner='客服经理';record.directorComment=comment;record.history.push({at:now(),actor,action:`退回经营预测：${comment}`});addNotice(s,'manager',`经营预算被退回：${record.project}`,comment,'tasks','high')
    }else return json(res,400,{error:'不支持的经营预算动作'})
-   audit(s,actor,`${record.id}：${record.history.at(-1).action}`);save(s);return stateJson(res,200,s,current)
+   audit(s,actor,`${record.id}：${record.history.at(-1).action}`);await save(s);return stateJson(res,200,s,current)
   }
   const contractMatch=url.pathname.match(/^\/api\/governance\/contracts\/([^/]+)\/action$/)
   if(req.method==='POST'&&contractMatch){
@@ -1079,7 +1236,7 @@ const server=http.createServer(async(req,res)=>{
     if(role!=='director'||record.status!=='director_pending'||!comment)return json(res,409,{error:'总监退回必须填写补充材料要求'})
     record.status='returned';record.ownerRole='manager';record.owner='客服经理';record.directorComment=comment;record.history.push({at:now(),actor,action:`退回续约材料：${comment}`});addNotice(s,'manager',`合同续约材料被退回：${record.project}`,comment,'tasks','high')
    }else return json(res,400,{error:'不支持的合同动作'})
-   audit(s,actor,`${record.id}：${record.history.at(-1).action}`);save(s);return stateJson(res,200,s,current)
+   audit(s,actor,`${record.id}：${record.history.at(-1).action}`);await save(s);return stateJson(res,200,s,current)
   }
   const meetingMatch=url.pathname.match(/^\/api\/governance\/meetings\/([^/]+)\/action$/)
   if(req.method==='POST'&&meetingMatch){
@@ -1095,7 +1252,7 @@ const server=http.createServer(async(req,res)=>{
     s.tasks.unshift({id:`MT-${Date.now()}-${action.id}`,eventId:record.id,title:action.title,type:'经营例会行动',ownerRole:action.ownerRole,owner:action.owner,supervisor:'运营总监',status:'todo',phase:'D',progress:0,dueAt:action.dueAt,evidence:'',verification:'',createdAt:now(),updatedAt:now(),sourceKey:`meeting:${record.id}:${action.id}`,sourceLabel:'经营例会',verificationRole:'director',workflowKind:'meeting_action',target:action.target,history:[{at:now(),actor,action:`经营例会发布行动：${action.target}`}]})
     addNotice(s,action.ownerRole,`经营例会行动：${action.title}`,`${action.target} · 截止${new Date(action.dueAt).toLocaleString('zh-CN',{hour12:false})}`,'tasks','high')
    })
-   record.history.push({at:now(),actor,action:`发布会议纪要并下发${record.actions.length}项行动`});audit(s,actor,`${record.id}发布经营会议行动`);save(s);return stateJson(res,200,s,current)
+   record.history.push({at:now(),actor,action:`发布会议纪要并下发${record.actions.length}项行动`});audit(s,actor,`${record.id}发布经营会议行动`);await save(s);return stateJson(res,200,s,current)
   }
   if(req.method==='POST'&&url.pathname==='/api/governance/cross-department'){
    const p=await body(req),{current,actor}=requireRuntimeRole(req,p.role,['director'])
@@ -1105,7 +1262,7 @@ const server=http.createServer(async(req,res)=>{
    if(!title||detail.length<10||!target||!department)return json(res,400,{error:'标题、目标部门、事实说明和验收目标不能为空'})
    const s=load(),sequence=String(s.governance.crossDepartmentItems.length+1).padStart(3,'0')
    const record={id:`CD-${new Date().toISOString().slice(0,10).replaceAll('-','')}-${sequence}`,title,originRole:'director',targetRole,targetDepartment:department,detail,target,dueAt:normalizeDueAt(p.dueAt),status:'target_pending',ownerRole:targetRole,owner:roles[targetRole],result:'',history:[{at:now(),actor,action:`下发跨部门协同：${detail}`}]}
-   s.governance.crossDepartmentItems.unshift(record);addNotice(s,targetRole,`总监跨部门协同：${title}`,`${target} · 请按时回传结果。`,'tasks','high');audit(s,actor,`创建${record.id}`);save(s);return stateJson(res,201,s,current)
+   s.governance.crossDepartmentItems.unshift(record);addNotice(s,targetRole,`总监跨部门协同：${title}`,`${target} · 请按时回传结果。`,'tasks','high');audit(s,actor,`创建${record.id}`);await save(s);return stateJson(res,201,s,current)
   }
   const crossDepartmentMatch=url.pathname.match(/^\/api\/governance\/cross-department\/([^/]+)\/action$/)
   if(req.method==='POST'&&crossDepartmentMatch){
@@ -1126,7 +1283,7 @@ const server=http.createServer(async(req,res)=>{
     if(role!=='director'||record.status!=='director_verification'||!result)return json(res,409,{error:'总监退回必须填写补充要求'})
     record.status='returned';record.ownerRole=record.targetRole;record.owner=roles[record.targetRole];record.history.push({at:now(),actor,action:`退回补充：${result}`});addNotice(s,record.targetRole,`跨部门事项需补充：${record.title}`,result,'tasks','high')
    }else return json(res,400,{error:'不支持的跨部门动作'})
-   audit(s,actor,`${record.id}：${record.history.at(-1).action}`);save(s);return stateJson(res,200,s,current)
+   audit(s,actor,`${record.id}：${record.history.at(-1).action}`);await save(s);return stateJson(res,200,s,current)
   }
   if(req.method==='POST'&&url.pathname==='/api/workforce/requests'){
    const p=await body(req),{current,role,actor}=requireRuntimeRole(req,p.role,['employee','leader','supervisor'])
@@ -1156,10 +1313,21 @@ const server=http.createServer(async(req,res)=>{
     ...next,dueAt:normalizeDueAt(p.dueAt),createdAt:now(),updatedAt:now(),result:'',hrbpFiledAt:'',
     history:[{at:now(),actor,action:`发起${labels[kind]}：${detail}`}],
    }
+   if(kind==='cross_team_dispatch'){
+    const sourceCoverage=s.workforce.coverage.find(item=>item.team===fromTeam)
+    const projectedOnDuty=Math.max(0,(sourceCoverage?.onDuty||0)-1)
+    const projectedRate=sourceCoverage?.required?projectedOnDuty/sourceCoverage.required*100:0
+    request.aiWarning=sourceCoverage&&projectedRate<sourceCoverage.targetCoverage?{
+     level:'warning',
+     message:`调出后${fromTeam}覆盖率预计为${projectedRate.toFixed(1)}%，低于${sourceCoverage.targetCoverage}%目标线`,
+     impact:`该方案可能使调出班组增加${Math.max(0,sourceCoverage.required-projectedOnDuty)}人人力缺口。AI仅提示目标偏差，不替代经理审批。`,
+     acknowledged:false,acknowledgedBy:'',acknowledgedAt:'',
+    }:null
+   }
    s.workforce.requests.unshift(request)
    addNotice(s,request.ownerRole,`${labels[kind]}待处理：${request.title}`,`${request.id} · ${date} · ${request.owner}`,'workforce','high')
    audit(s,actor,`创建${labels[kind]}${request.id}`)
-   save(s)
+   await save(s)
    return stateJson(res,201,s,current)
   }
   const workforceRequestMatch=url.pathname.match(/^\/api\/workforce\/requests\/([^/]+)\/action$/)
@@ -1188,13 +1356,22 @@ const server=http.createServer(async(req,res)=>{
    }else if(action==='supervisor_reject'){
     if(role!=='supervisor'||request.ownerRole!=='supervisor'||request.status!=='supervisor_pending')return reject('仅当前责任主管可驳回')
     finishRejected('主管确认')
+   }else if(action==='manager_acknowledge_warning'){
+    if(role!=='manager'||request.ownerRole!=='manager'||request.status!=='manager_pending')return reject('仅当前责任客服经理可知悉风险提醒')
+    if(request.kind!=='cross_team_dispatch'||!request.aiWarning)return reject('当前调度方案没有需要知悉的AI目标偏差提醒')
+    request.aiWarning={...request.aiWarning,acknowledged:true,acknowledgedBy:actor,acknowledgedAt:now()}
+    request.history.push({at:now(),actor,action:`已知悉AI目标偏差提醒，保留本岗位审批权：${request.aiWarning.message}`})
    }else if(action==='manager_approve'){
-   if(role!=='manager'||request.ownerRole!=='manager'||request.status!=='manager_pending')return reject('仅当前责任客服经理可审批')
+    if(role!=='manager'||request.ownerRole!=='manager'||request.status!=='manager_pending')return reject('仅当前责任客服经理可审批')
     if(request.kind==='cross_team_dispatch'){
      const sourceCoverage=s.workforce.coverage.find(item=>item.team===request.fromTeam)
      if(!sourceCoverage)return json(res,409,{error:'调出班组不存在，不能批准调度',code:'WORKFORCE_COVERAGE_MISSING'})
      const afterRate=(sourceCoverage.onDuty-1)/sourceCoverage.required*100
-     if(afterRate<sourceCoverage.targetCoverage)return json(res,409,{error:`调出后${request.fromTeam}覆盖率仅${afterRate.toFixed(1)}%，低于${sourceCoverage.targetCoverage}%保护线，请重新平衡方案`,code:'WORKFORCE_SOURCE_UNDER_TARGET'})
+     if(afterRate<sourceCoverage.targetCoverage&&!request.aiWarning?.acknowledged)return json(res,409,{
+      error:'请先知悉AI目标偏差提醒，再由经理自主决定是否批准',
+      code:'AI_WARNING_ACK_REQUIRED',
+      warning:request.aiWarning,
+     })
     }
     request.status='closed';request.ownerRole='manager';request.owner='已关闭';request.result=comment||'调度方案已批准并通知相关班组'
     request.history.push({at:now(),actor,action:`经理批准并关闭：${request.result}`})
@@ -1216,7 +1393,7 @@ const server=http.createServer(async(req,res)=>{
     if(shift&&request.kind==='shift_change')shift.status='adjusted'
     addNotice(s,request.requesterRole,`排班事项已生效：${request.title}`,request.result,'workforce','normal')
    }else return json(res,400,{error:'不支持的排班考勤动作'})
-   request.updatedAt=now();audit(s,actor,`${request.id}：${request.history.at(-1)?.action||action}`);save(s)
+   request.updatedAt=now();audit(s,actor,`${request.id}：${request.history.at(-1)?.action||action}`);await save(s)
    return stateJson(res,200,s,current)
   }
   const qualityPlanMatch=url.pathname.match(/^\/api\/quality\/plans\/([^/]+)\/action$/)
@@ -1242,7 +1419,7 @@ const server=http.createServer(async(req,res)=>{
     plan.history.unshift({at:now(),actor,action:'抽检量、员工覆盖率和及时率全部达标，计划关闭'})
     addNotice(s,'manager',`质检计划已关闭：${plan.name}`,`${plan.completedSamples}通 · 员工覆盖${plan.actualEmployeeCoverage}% · 及时率${plan.actualTimelyRate}%`,'command','normal')
    }else return json(res,400,{error:'质检计划动作不正确'})
-   audit(s,actor,`${action==='close'?'关闭':'更新'}质检计划${plan.id}`);save(s)
+   audit(s,actor,`${action==='close'?'关闭':'更新'}质检计划${plan.id}`);await save(s)
    return stateJson(res,200,s,current)
   }
   if(req.method==='POST'&&url.pathname==='/api/quality/records'){
@@ -1265,7 +1442,7 @@ const server=http.createServer(async(req,res)=>{
     if(severity==='critical')addNotice(s,'manager',`重大质检问题：${employeeName}`,`${team} · ${record.problem}`,'command','high')
     if(employee?.leader)record.leader=employee.leader
    }
-   audit(s,actor,`新增抽检记录${record.id}（${result}）`);save(s)
+   audit(s,actor,`新增抽检记录${record.id}（${result}）`);await save(s)
    return stateJson(res,201,s,current)
   }
   if(req.method==='POST'&&url.pathname==='/api/quality/appeals'){
@@ -1283,7 +1460,7 @@ const server=http.createServer(async(req,res)=>{
    const appeal={id:`QA-${day}-${sequence}`,recordId:record.id,applicantRole:role,applicant:actor,employeeName:record.employeeName,team:record.team,reason,status:'pending_quality_review',owner:'质检专员',dueAt:new Date(Date.now()+4*60*60*1000).toISOString(),reviewer:'',reviewResult:'',createdAt:now(),updatedAt:now(),history:[{at:now(),actor,action:'提交质量申诉'}]}
    s.quality.appeals.unshift(appeal);record.appealStatus='appealed'
    addNotice(s,'quality',`质量申诉待复核：${record.employeeName}`,`${appeal.id} · ${record.problem}`,'quality','high')
-   audit(s,actor,`提交质量申诉${appeal.id}`);save(s)
+   audit(s,actor,`提交质量申诉${appeal.id}`);await save(s)
    return stateJson(res,201,s,current)
   }
   const qualityAppealMatch=url.pathname.match(/^\/api\/quality\/appeals\/([^/]+)\/action$/)
@@ -1304,7 +1481,7 @@ const server=http.createServer(async(req,res)=>{
     addNotice(s,appeal.applicantRole,`质量申诉已${action==='uphold'?'维持':'改判'}：${appeal.employeeName}`,comment,'quality',action==='uphold'?'normal':'high')
     if(action==='overturn')addNotice(s,'manager',`质检申诉改判：${appeal.employeeName}`,`${appeal.id} · 请关注质检口径一致性。`,'command','normal')
    }else return json(res,400,{error:'申诉动作不正确'})
-   appeal.updatedAt=now();audit(s,actor,`${action}质量申诉${appeal.id}`);save(s)
+   appeal.updatedAt=now();audit(s,actor,`${action}质量申诉${appeal.id}`);await save(s)
    return stateJson(res,200,s,current)
   }
   const qualityCalibrationMatch=url.pathname.match(/^\/api\/quality\/calibrations\/([^/]+)\/action$/)
@@ -1333,7 +1510,7 @@ const server=http.createServer(async(req,res)=>{
      addNotice(s,'manager',`质检校准未达标：${calibration.title}`,`一致率${consistency}%，已转培训岗纠偏。`,'command','high')
     }
    }else return json(res,400,{error:'校准动作不正确'})
-   audit(s,actor,`${action}质检校准${calibration.id}`);save(s)
+   audit(s,actor,`${action}质检校准${calibration.id}`);await save(s)
    return stateJson(res,200,s,current)
   }
   const qualityCaseMatch=url.pathname.match(/^\/api\/quality\/cases\/([^/]+)\/action$/)
@@ -1347,7 +1524,7 @@ const server=http.createServer(async(req,res)=>{
    caseItem.status='published';caseItem.reviewedBy=actor;caseItem.publishedAt=now();caseItem.history.push({at:now(),actor,action:'审核并发布至质检案例库'})
    addNotice(s,'training',`新质检案例已发布：${caseItem.title}`,`${caseItem.category} · 可用于班前会或专项培训。`,'training','normal')
    addNotice(s,'leader',`新质量案例：${caseItem.title}`,caseItem.standard,'quality','normal')
-   audit(s,actor,`发布质检案例${caseItem.id}`);save(s)
+   audit(s,actor,`发布质检案例${caseItem.id}`);await save(s)
    return stateJson(res,200,s,current)
   }
   if(req.method==='POST'&&url.pathname==='/api/quality/collaborations'){
@@ -1376,7 +1553,7 @@ const server=http.createServer(async(req,res)=>{
    s.tasks.unshift(t)
    addNotice(s,'leader',`质检协同单：${employee.name}`,`${employee.problem} · 请于${new Date(dueAt).toLocaleString('zh-CN',{hour12:false})}前完成辅导并提交证据。`,'tasks','high')
    audit(s,actor,`创建质检协同单${t.id}（${employee.name}/${employee.id}）`)
-   save(s)
+   await save(s)
    return stateJson(res,201,s,current)
   }
   if(req.method==='POST'&&url.pathname==='/api/employee/support-requests'){
@@ -1406,11 +1583,96 @@ const server=http.createServer(async(req,res)=>{
    s.tasks.unshift(t)
    addNotice(s,'leader',`员工请求支持：${requester.name}`,`${supportType} · ${detail}`,'tasks','high')
    audit(s,actor,`创建员工支持请求${t.id}（${requester.name}/${requester.id}）`)
-   save(s)
+   await save(s)
    return stateJson(res,201,s,current)
+  }
+  let taskAttachmentMatch=url.pathname.match(/^\/api\/tasks\/([^/]+)\/attachments(?:\/([^/]+))?$/)
+  if(req.method==='POST'&&taskAttachmentMatch&&!taskAttachmentMatch[2]){
+   const p=await body(req),{current,role,actor}=requireRuntimeRole(req,p.role)
+   const s=load(),task=s.tasks.find(item=>item.id===taskAttachmentMatch[1])
+   if(!task)return json(res,404,{error:'任务不存在'})
+   if(!taskVisibleToRole(task,role))return json(res,403,{error:'当前岗位无权访问该任务附件'})
+   const allowedRoles=new Set([task.ownerRole,task.executionOwnerRole,task.originRole,task.initiatorRole,task.verificationRole])
+   if(current.user.roleId!=='system-admin'&&!allowedRoles.has(role))return json(res,403,{error:'仅任务相关岗位可以上传附件'})
+   const fileName=safeText(String(p.fileName||'').replace(/[\\/\r\n]/g,'_'),255)
+   const mimeType=safeText(p.mimeType||'application/octet-stream',128)
+   const nodeCode=['plan','execute','submit','verify','act'].includes(p.nodeCode)?p.nodeCode:'submit'
+   if(!fileName||typeof p.contentBase64!=='string'||!p.contentBase64)return json(res,400,{error:'请选择有效附件'})
+   const content=Buffer.from(p.contentBase64,'base64')
+   if(!content.length||content.length>5*1024*1024)return json(res,413,{error:'单个附件大小需在1字节至5MB之间'})
+   const attachment=await saveTaskAttachment({taskId:task.id,nodeCode,fileName,mimeType,content,uploadedBy:actor,uploadedRole:role})
+   task.attachments=Array.isArray(task.attachments)?task.attachments:[]
+   task.attachments.push(attachment)
+   task.history.push({at:now(),actor,action:`在${nodeCode}节点上传附件：${fileName}（${Math.ceil(content.length/1024)}KB）`})
+   audit(s,actor,`为${task.id}上传附件${attachment.id}`)
+   try{await save(s)}
+   catch(error){await deleteTaskAttachment(attachment.id).catch(()=>{});throw error}
+   return stateJson(res,201,s,current)
+  }
+  if(req.method==='GET'&&taskAttachmentMatch&&taskAttachmentMatch[2]){
+   const current=requireReadySession(req)
+   const role=authorizeRuntimeRole(current,url.searchParams.get('role'))
+   const task=load().tasks.find(item=>item.id===taskAttachmentMatch[1])
+   if(!task)return json(res,404,{error:'任务不存在'})
+   if(!taskVisibleToRole(task,role))return json(res,403,{error:'当前岗位无权下载该附件'})
+   const attachment=await loadTaskAttachment(task.id,taskAttachmentMatch[2])
+   if(!attachment)return json(res,404,{error:'附件不存在'})
+   const fileName=String(attachment.fileName).replace(/[\r\n"]/g,'_')
+   res.writeHead(200,{
+    'content-type':attachment.mimeType||'application/octet-stream',
+    'content-length':attachment.fileSize,
+    'content-disposition':`attachment; filename="task-attachment"; filename*=UTF-8''${encodeURIComponent(fileName)}`,
+    'cache-control':'private, no-store','x-content-type-options':'nosniff',
+   })
+   return res.end(attachment.content)
+  }
+  const taskImprovementMatch=url.pathname.match(/^\/api\/tasks\/([^/]+)\/improvement$/)
+  if(req.method==='GET'&&taskImprovementMatch){
+   const current=requireReadySession(req),role=authorizeRuntimeRole(current,url.searchParams.get('role'))
+   const task=load().tasks.find(item=>item.id===taskImprovementMatch[1])
+   if(!task)return json(res,404,{error:'任务不存在'})
+   if(!taskVisibleToRole(task,role))return json(res,403,{error:'当前岗位无权查看该任务改善数据'})
+   const livePoints=await getTaskMetricTrend({employeeCode:task.employeeId,metricCode:task.metric?.code})
+   return json(res,200,improvementSummary(task,livePoints))
   }
   if(req.method==='POST'&&url.pathname==='/api/tasks'){
    const p=await body(req)
+   if(p.source==='management-directive'){
+    const {current,role,actor}=requireRuntimeRole(req,p.role,['supervisor','manager','director'])
+    const targetRole=safeText(p.targetRole,32)
+    if(!directiveTargets[role]?.includes(targetRole))return json(res,403,{error:'当前岗位不能向该岗位下发任务'})
+    const title=safeText(p.title,120),problem=safeText(p.problem,1200),issueCategory=safeText(p.issueCategory,64)
+    const issueLocation=safeText(p.issueLocation,500),target=safeText(p.target,600),successCriteria=safeText(p.successCriteria,1200)
+    const actionPlan=safeText(p.actionPlan,1200),owner=safeText(p.owner,128)
+    if(!title||problem.length<10||!issueCategory||!issueLocation||!target||successCriteria.length<10||actionPlan.length<10||!owner)return json(res,400,{error:'请完整填写标题、具体问题定位、目标、改善动作、责任人和验收标准'})
+    const plannedStartAt=normalizeDueAt(p.plannedStartAt),submitDueAt=normalizeDueAt(p.submitDueAt),verificationDueAt=normalizeDueAt(p.verificationDueAt)
+    if(Date.parse(plannedStartAt)>Date.parse(submitDueAt)||Date.parse(submitDueAt)>Date.parse(verificationDueAt))return json(res,400,{error:'开始时间、提交时限和验证时限必须依次递增'})
+    const suggestion=systemTargetSuggestion(p)
+    const metric={
+     code:safeText(p.metricCode||suggestion.metricCode,64),label:safeText(p.metricLabel||suggestion.metricLabel,128),
+     baseline:Number.isFinite(Number(p.baselineValue))?Number(p.baselineValue):suggestion.baselineValue,
+     target:Number.isFinite(Number(p.targetValue))?Number(p.targetValue):suggestion.targetValue,
+     unit:safeText(p.metricUnit??suggestion.metricUnit,32),direction:p.metricDirection==='lower'?'lower':'higher',
+    }
+    const s=load(),day=new Date().toISOString().slice(0,10).replaceAll('-','')
+    const sequence=String(s.tasks.filter(item=>item.id.startsWith(`LP-${day}-`)).length+1).padStart(3,'0')
+    const task=normalizeLeanTask({
+     id:`LP-${day}-${sequence}`,eventId:`DIRECTIVE-${Date.now()}`,title,type:'管理指派',workflowKind:'lean_directive',
+     sourceLabel:'精益管理任务',sourceKey:`management-directive:${Date.now()}`,initiatorRole:role,initiatorName:actor,
+     originRole:targetRole,executionOwnerRole:targetRole,executionOwner:owner,ownerRole:targetRole,owner,
+     verificationRole:role,verificationOwner:actor,supervisor:actor,status:'todo',phase:'P',progress:0,
+     problem,issueCategory,issueLocation,target,successCriteria,actionPlan,metric,
+     employeeId:safeText(p.employeeCode||'',64),person:safeText(p.employeeName||'',128),team:safeText(p.team||'',255),
+     plannedStartAt,submitDueAt,verificationDueAt,dueAt:submitDueAt,evidence:'',verification:'',
+     aiRationale:safeText(p.aiRationale||suggestion.rationale,1200),attachments:[],createdAt:now(),updatedAt:now(),
+     history:[{at:now(),actor,action:`自上而下指派${roles[targetRole]}：${problem}；目标：${target}；提交时限：${submitDueAt}`}],
+    })
+    s.tasks.unshift(task)
+    addNotice(s,targetRole,`上级指派任务：${title}`,`${actor}下发 · ${target} · ${new Date(submitDueAt).toLocaleString('zh-CN',{hour12:false})}前提交`,'tasks','high')
+    audit(s,actor,`创建精益管理任务${task.id}并指派${roles[targetRole]}`)
+    await save(s)
+    return stateJson(res,201,s,current)
+   }
    if(p.source!=='team-morning-brief')return json(res,400,{error:'未知任务来源'})
    const {current,actor}=requireRuntimeRole(req,p.role,['leader','supervisor','manager','director','quality','training','hrbp'])
    const s=load()
@@ -1430,7 +1692,7 @@ const server=http.createServer(async(req,res)=>{
    s.tasks.unshift(t)
    addNotice(s,'leader',`晨会任务单：${employee.name}`,`${category} · ${employee.reason}`,'tasks',employee.category==='重点员工'?'normal':'high')
    audit(s,actor,`从班组晨报创建${t.id}（${employee.name}/${employee.jobNo}）`)
-   save(s)
+   await save(s)
    return stateJson(res,201,s,current)
   }
   let m=url.pathname.match(/^\/api\/events\/([^/]+)\/review$/)
@@ -1438,13 +1700,60 @@ const server=http.createServer(async(req,res)=>{
    const p=await body(req),{current,actor}=requireRuntimeRole(req,p.role,['supervisor'])
    const s=load(),e=s.events.find(x=>x.id===m[1]);if(!e)return json(res,404,{error:'事件不存在'});if(e.status!=='pending_supervisor_review')return json(res,409,{error:'当前状态不可审批'});if(!['approve','reject'].includes(p.action))return json(res,400,{error:'未知审批操作'});
    if(p.action==='reject'){e.status='rejected';e.currentRole='supervisor';e.history.push({at:now(),actor,action:`驳回预警：${p.comment||'数据不充分'}`});audit(s,actor,`驳回${e.id}`)}
-   else if(p.action==='approve'){e.status='approved';e.currentRole='leader';e.history.push({at:now(),actor,action:`确认预警并生成任务：${p.comment||'同意建议动作'}`});const t={id:`TK-${Date.now()}`,eventId:e.id,title:e.title,type:e.type,ownerRole:'leader',owner:'张伟（班长）',supervisor:'前台客服主管',status:'todo',phase:'D',progress:0,dueAt:e.dueAt,evidence:'',verification:'',createdAt:now(),updatedAt:now(),history:[{at:now(),actor,action:'主管确认，任务已下发班长'}]};s.tasks.unshift(t);addNotice(s,'leader',`主管已确认：${e.title}`,'请在截止时间前执行并提交证据。','tasks','high');audit(s,actor,`确认${e.id}并创建${t.id}`)}save(s);return stateJson(res,200,s,current)
+   else if(p.action==='approve'){e.status='approved';e.currentRole='leader';e.history.push({at:now(),actor,action:`确认预警并生成任务：${p.comment||'同意建议动作'}`});const t={id:`TK-${Date.now()}`,eventId:e.id,title:e.title,type:e.type,ownerRole:'leader',owner:'张伟（班长）',supervisor:'前台客服主管',status:'todo',phase:'D',progress:0,dueAt:e.dueAt,evidence:'',verification:'',createdAt:now(),updatedAt:now(),history:[{at:now(),actor,action:'主管确认，任务已下发班长'}]};s.tasks.unshift(t);addNotice(s,'leader',`主管已确认：${e.title}`,'请在截止时间前执行并提交证据。','tasks','high');audit(s,actor,`确认${e.id}并创建${t.id}`)}await save(s);return stateJson(res,200,s,current)
   }
   m=url.pathname.match(/^\/api\/tasks\/([^/]+)\/action$/)
   if(req.method==='POST'&&m){
    const p=await body(req),{current,role,actor}=requireRuntimeRole(req,p.role)
    const s=load(),t=s.tasks.find(x=>x.id===m[1]);if(!t)return json(res,404,{error:'任务不存在'});
-   if(p.action==='meeting_start'){
+   if(p.action==='lean_start'){
+    if(t.workflowKind!=='lean_directive'||role!==t.executionOwnerRole||t.ownerRole!==role||!['todo','returned_to_origin'].includes(t.status))return json(res,409,{error:'当前岗位不能开始该精益任务'})
+    t.status='doing';t.phase='D';t.progress=25;t.startedAt=now();t.ownerRole=t.executionOwnerRole;t.owner=t.executionOwner
+    const executeNode=t.nodes?.find(item=>item.code==='execute');if(executeNode)executeNode.status='active'
+    t.history.push({at:now(),actor,action:`接收任务并开始执行：${t.actionPlan}`})
+   }
+   else if(p.action==='lean_submit'){
+    if(t.workflowKind!=='lean_directive'||role!==t.executionOwnerRole||t.ownerRole!==role||!['doing','returned_to_origin'].includes(t.status))return json(res,409,{error:'当前岗位不能提交该精益任务'})
+    const evidence=safeText(p.evidence,3000)
+    if(evidence.length<10)return json(res,400,{error:'请填写至少10字的执行结果和证据说明'})
+    t.status='pending_verification';t.ownerRole=t.verificationRole;t.owner=t.verificationOwner||roles[t.verificationRole]
+    t.phase='C';t.progress=80;t.evidence=evidence;t.submittedAt=now()
+    if(p.actualValue!==undefined&&p.actualValue!==''&&Number.isFinite(Number(p.actualValue))){
+     t.metricSnapshots=Array.isArray(t.metricSnapshots)?t.metricSnapshots:[]
+     t.metricSnapshots.push({
+      id:`${t.id}:submit:${Date.now()}`,metricCode:t.metric.code,metricLabel:t.metric.label,actual:Number(p.actualValue),
+      target:t.metric.target,unit:t.metric.unit,direction:t.metric.direction,type:'submission',source:'责任岗位提交',
+      observedAt:now(),note:evidence,
+     })
+    }
+    completeTaskNode(t,'execute',{actor,role,result:t.actionPlan})
+    completeTaskNode(t,'submit',{actor,role,result:evidence})
+    t.history.push({at:now(),actor,action:`提交${roles[t.verificationRole]}验证：${evidence}`})
+    addNotice(s,t.verificationRole,`精益任务待验证：${t.title}`,`${roles[role]}已提交；系统将展示${t.metric.label}改善趋势辅助验收。`,'tasks','high')
+   }
+   else if(p.action==='lean_verify_success'){
+    if(t.workflowKind!=='lean_directive'||role!==t.verificationRole||t.ownerRole!==role||t.status!=='pending_verification')return json(res,409,{error:'当前岗位不能验收该精益任务'})
+    const comment=safeText(p.comment,2000)
+    if(comment.length<10)return json(res,400,{error:'请结合目标、系统趋势和附件填写至少10字的验收结论'})
+    t.status='closed';t.phase='A';t.progress=100;t.verification=comment;t.verifiedAt=now();t.closedAt=now()
+    completeTaskNode(t,'verify',{actor,role,result:comment})
+    completeTaskNode(t,'act',{actor,role,result:safeText(p.standardizedAction||comment,1200)})
+    t.standardizedAction=safeText(p.standardizedAction||comment,1200)
+    t.history.push({at:now(),actor,action:`对照${t.metric.label}目标验收通过并关闭：${comment}`})
+    addNotice(s,t.executionOwnerRole,`精益任务已验收：${t.title}`,comment,'tasks','normal')
+   }
+   else if(p.action==='lean_verify_return'){
+    if(t.workflowKind!=='lean_directive'||role!==t.verificationRole||t.ownerRole!==role||t.status!=='pending_verification')return json(res,409,{error:'当前岗位不能退回该精益任务'})
+    const comment=safeText(p.comment,2000)
+    if(comment.length<10)return json(res,400,{error:'请填写至少10字的未达标事实和补充要求'})
+    t.status='returned_to_origin';t.ownerRole=t.executionOwnerRole;t.owner=t.executionOwner;t.phase='D';t.progress=45
+    t.supervisorGuidance=comment
+    const executeNode=t.nodes?.find(item=>item.code==='execute');if(executeNode){executeNode.status='active';executeNode.completedAt=''}
+    const verifyNode=t.nodes?.find(item=>item.code==='verify');if(verifyNode){verifyNode.status='pending';verifyNode.completedAt=''}
+    t.history.push({at:now(),actor,action:`系统趋势或证据未达到目标，退回${roles[t.executionOwnerRole]}：${comment}`})
+    addNotice(s,t.executionOwnerRole,`精益任务退回整改：${t.title}`,comment,'tasks','high')
+   }
+   else if(p.action==='meeting_start'){
     if(t.workflowKind!=='meeting_action'||role!==t.ownerRole||!['todo','returned_to_origin'].includes(t.status))return json(res,409,{error:'当前经营例会行动不可开始'})
     t.originRole=role;t.status='doing';t.phase='D';t.progress=25;t.history.push({at:now(),actor,action:'接收经营例会行动并开始执行'})
    }
@@ -1522,11 +1831,11 @@ const server=http.createServer(async(req,res)=>{
    }
    else if(p.action==='escalate'){
     const chain=['leader','supervisor','manager','director'];let i=chain.indexOf(t.ownerRole);if(i<chain.length-1)t.ownerRole=chain[i+1];t.status='escalated';t.history.push({at:now(),actor,action:`逾期升级至${roles[t.ownerRole]}`});addNotice(s,t.ownerRole,`逾期升级：${t.title}`,`任务已升级至${roles[t.ownerRole]}。`,'tasks','high')
-   } else return json(res,400,{error:'未知操作'});t.updatedAt=now();audit(s,actor,`${p.action} ${t.id}`);save(s);return stateJson(res,200,s,current)
+   } else return json(res,400,{error:'未知操作'});t.updatedAt=now();audit(s,actor,`${p.action} ${t.id}`);await save(s);return stateJson(res,200,s,current)
   }
   if(req.method==='POST'&&url.pathname==='/api/simulate-timeout'){
    const p=await body(req),{current,role,actor}=requireRuntimeRole(req,p.role)
-   const s=load(),t=s.tasks.find(x=>x.status!=='closed'&&x.ownerRole===role);if(!t)return json(res,409,{error:'当前岗位暂无可升级任务'});const chain=['leader','supervisor','manager','director'];let i=chain.indexOf(t.ownerRole);if(i>=chain.length-1)return json(res,409,{error:'当前已是最高责任层级'});t.ownerRole=chain[i+1];t.status='escalated';t.history.push({at:now(),actor,action:`触发SLA逾期升级至${roles[t.ownerRole]}`});addNotice(s,t.ownerRole,`SLA逾期：${t.title}`,`任务已自动升级至${roles[t.ownerRole]}。`,'tasks','high');audit(s,actor,`触发SLA升级${t.id}`);save(s);return stateJson(res,200,s,current)
+   const s=load(),t=s.tasks.find(x=>x.status!=='closed'&&x.ownerRole===role);if(!t)return json(res,409,{error:'当前岗位暂无可升级任务'});const chain=['leader','supervisor','manager','director'];let i=chain.indexOf(t.ownerRole);if(i>=chain.length-1)return json(res,409,{error:'当前已是最高责任层级'});t.ownerRole=chain[i+1];t.status='escalated';t.history.push({at:now(),actor,action:`触发SLA逾期升级至${roles[t.ownerRole]}`});addNotice(s,t.ownerRole,`SLA逾期：${t.title}`,`任务已自动升级至${roles[t.ownerRole]}。`,'tasks','high');audit(s,actor,`触发SLA升级${t.id}`);await save(s);return stateJson(res,200,s,current)
   }
   if(!url.pathname.startsWith('/api/')){
    const rel=url.pathname==='/'?'index.html':url.pathname.replace(/^\//,'')
@@ -1542,12 +1851,29 @@ const server=http.createServer(async(req,res)=>{
   return json(res,404,{error:'接口不存在'})
  }catch(e){if(!e.status||e.status>=500)console.error(e);return json(res,e.status||500,{error:e.status?e.message:'服务处理失败',...(e.code?{code:e.code}:{})})}
 })
-server.listen(PORT,'0.0.0.0',()=>console.log(`河北基地平台: http://localhost:${PORT}`))
+server.listen(PORT,'0.0.0.0',()=>{
+ console.log(`河北基地平台: http://localhost:${PORT}`)
+ console.log(`MySQL目标: ${databaseTarget()}`)
+ console.log(startupDatabase.connected?`MySQL已连接: ${startupDatabase.target}`:`MySQL未配置，使用本地测试状态`)
+ if(startupDatabase.connected)console.log(process.env.AUTO_MIGRATE==='false'?'数据库迁移: 由部署初始化容器负责':`team_006业务表已就绪: ${startupMigrations.length}个迁移`)
+ console.log(`业务状态: ${statePersistenceMode()} · 账号权限: ${accessPersistence.mode}`)
+})
 
 let refreshTimer
-const runScheduledRefresh=()=>{
- const s=load();s.meta.batchNo+=1;s.meta.lastRefresh=now();s.meta.nextRefresh=new Date(Date.now()+30*60*1000).toISOString();
- addNotice(s,'data',`半小时批次 #${s.meta.batchNo} 自动刷新完成`,'四类预警规则已完成定时扫描。','reports','normal');audit(s,'定时调度器',`自动执行半小时刷新批次 #${s.meta.batchNo}`);save(s);scheduleRefresh()
+const runScheduledRefresh=async()=>{
+ const bucket=Math.floor(Date.now()/(30*60*1000)),batchKey=String(bucket)
+ try{
+  const claimed=await claimScheduledBatch('half_hour_refresh',batchKey,instanceId)
+  if(!claimed)return
+  const s=load();s.meta.batchNo+=1;s.meta.lastRefresh=now();s.meta.nextRefresh=new Date(Date.now()+30*60*1000).toISOString()
+  addNotice(s,'data',`半小时批次 #${s.meta.batchNo} 自动刷新完成`,'四类预警规则已完成定时扫描。','reports','normal')
+  audit(s,'定时调度器',`自动执行半小时刷新批次 #${s.meta.batchNo}`)
+  await save(s)
+  await finishScheduledBatch('half_hour_refresh',batchKey,'completed',`批次#${s.meta.batchNo}完成`)
+ }catch(error){
+  await finishScheduledBatch('half_hour_refresh',batchKey,'failed',error.message).catch(()=>{})
+  console.error(`半小时刷新失败: ${error.code||error.message}`)
+ }finally{scheduleRefresh()}
 }
 const scheduleRefresh=()=>{
  if(refreshTimer)clearTimeout(refreshTimer)
@@ -1555,3 +1881,20 @@ const scheduleRefresh=()=>{
  refreshTimer.unref()
 }
 scheduleRefresh()
+
+let shuttingDown=false
+const shutdown=signal=>{
+ if(shuttingDown)return
+ shuttingDown=true
+ console.log(`收到${signal}，正在安全停止服务`)
+ if(refreshTimer)clearTimeout(refreshTimer)
+ const forceTimer=setTimeout(()=>process.exit(1),10_000)
+ server.close(async()=>{
+  try{await databaseClose()}finally{
+   clearTimeout(forceTimer)
+   process.exit(0)
+  }
+ })
+}
+process.on('SIGTERM',()=>shutdown('SIGTERM'))
+process.on('SIGINT',()=>shutdown('SIGINT'))

@@ -9,12 +9,20 @@ export interface WorkflowEvent {
 }
 export interface WorkflowTask {
   id:string;eventId:string;title:string;type:string;ownerRole:string;owner:string;supervisor:string
-  status:WorkflowTaskStatus;phase:'D'|'C'|'A';progress:number;dueAt:string;evidence:string;verification:string
+  status:WorkflowTaskStatus;phase:'P'|'D'|'C'|'A';progress:number;dueAt:string;evidence:string;verification:string
   createdAt:string;updatedAt:string;managerGuidance?:string;supervisorGuidance?:string;history:{at:string;actor:string;action:string}[]
   sourceKey?:string;sourceLabel?:string;person?:string;team?:string
   verificationRole?:string;employeeId?:string;leader?:string;qualityProblem?:string;qualityEvidence?:string
   requirement?:string;successCriteria?:string;reinspectAt?:string;workflowKind?:string;requestType?:string;requestDetail?:string
   originRole?:string;target?:string;aiRationale?:string;collaborationRole?:string
+  initiatorRole?:string;initiatorName?:string;executionOwnerRole?:string;executionOwner?:string;verificationOwner?:string
+  problem?:string;issueCategory?:string;issueLocation?:string;actionPlan?:string
+  plannedStartAt?:string;submitDueAt?:string;verificationDueAt?:string;startedAt?:string;submittedAt?:string;verifiedAt?:string;closedAt?:string
+  standardizedAction?:string
+  metric?:{code:string;label:string;baseline:number|null;target:number|null;unit:string;direction:'higher'|'lower'}
+  nodes?:{id:string;code:string;name:string;target:string;ownerRole:string;owner:string;plannedAt:string;completedAt:string;status:'pending'|'active'|'completed';sequence:number;result:string;completedBy?:string;completedByRole?:string}[]
+  attachments?:{id:string;taskId:string;nodeCode:string;fileName:string;mimeType:string;fileSize:number;uploadedBy:string;uploadedRole:string;createdAt:string}[]
+  metricSnapshots?:{id:string;metricCode:string;metricLabel:string;actual:number|null;target:number|null;unit:string;direction:'higher'|'lower';type:string;source:string;observedAt:string;note:string}[]
 }
 export interface WorkflowNotice {id:string;role:string;title:string;desc:string;target:string;priority:string;createdAt:string;read:boolean}
 export interface TrainingReportRecord {
@@ -125,8 +133,18 @@ export interface GrowthReview {
  status:'planned'|'training_review'|'leader_pending'|'closed';trainingComment:string;leaderComment:string
  metrics:{label:string;target:number;actual:number;unit:string;higherBetter:boolean}[];history:{at:string;actor:string;action:string}[]
 }
+export type DevelopmentRole='employee'|'leader'|'supervisor'|'quality'|'training'|'hrbp'
+export type DevelopmentStatus='pending_acceptance'|'in_progress'|'pending_verification'|'returned'|'closed'
+export interface DevelopmentCase {
+ id:string;type:'training'|'interview';title:string;reason:string;goal:string
+ employeeId:string;employeeName:string;team:string
+ initiatorRole:DevelopmentRole;initiatorName:string;responderRole:DevelopmentRole;responderName:string
+ ownerRole:DevelopmentRole;verificationRole:DevelopmentRole;status:DevelopmentStatus
+ dueAt:string;createdAt:string;acknowledgement:string;result:string;verificationComment:string
+ history:{at:string;actor:string;action:string}[]
+}
 export interface LearningState {
- version:number;questionBanks:LearningQuestionBank[];sessions:LearningSession[];assignments:LearningAssignment[];suggestions:LearningSuggestion[];growthReviews:GrowthReview[]
+ version:number;questionBanks:LearningQuestionBank[];sessions:LearningSession[];assignments:LearningAssignment[];suggestions:LearningSuggestion[];growthReviews:GrowthReview[];developmentCases:DevelopmentCase[]
 }
 export type HrbpCaseStatus='hrbp_todo'|'hrbp_contacting'|'manager_pending'|'manager_contacting'|'closed'
 export interface HrbpCaseRecord {
@@ -152,6 +170,9 @@ export interface WorkforceRequest {
  id:string;kind:WorkforceRequestKind;title:string;requesterRole:string;requester:string;employeeId:string;employeeName:string
  fromTeam:string;toTeam:string;date:string;detail:string;status:WorkforceRequestStatus;ownerRole:string;owner:string
  dueAt:string;createdAt:string;updatedAt:string;result:string;hrbpFiledAt:string;history:{at:string;actor:string;action:string}[]
+ aiWarning?:{
+  level:'warning';message:string;impact:string;acknowledged:boolean;acknowledgedBy:string;acknowledgedAt:string
+ }|null
 }
 export interface WorkforceState {
  employees:WorkforceEmployee[];coverage:WorkforceCoverage[];shifts:WorkforceShift[];requests:WorkforceRequest[]
@@ -229,6 +250,7 @@ export const workflowApi={
  refresh:()=>call('/api/refresh',{method:'POST'}),
  review:(id:string,action:'approve'|'reject',comment='')=>call(`/api/events/${id}/review`,{method:'POST',body:JSON.stringify({role:'supervisor',actor:'前台客服主管',action,comment})}),
  createReportTask:(payload:{role:string;actor:string;reportDate:string;employee:{category:string;position:string;sourceRow:number;name:string;jobNo:string;team:string;reason:string}})=>call('/api/tasks',{method:'POST',body:JSON.stringify({...payload,source:'team-morning-brief'})}),
+ createDirectiveTask:(payload:{role:string;title:string;targetRole:string;owner:string;problem:string;issueCategory:string;issueLocation:string;target:string;successCriteria:string;actionPlan:string;metricCode:string;metricLabel:string;metricUnit:string;metricDirection:'higher'|'lower';baselineValue:number;targetValue:number;plannedStartAt:string;submitDueAt:string;verificationDueAt:string;aiRationale:string;employeeCode?:string;employeeName?:string;team?:string})=>call('/api/tasks',{method:'POST',body:JSON.stringify({...payload,source:'management-directive'})}),
  createQualityCollaboration:(payload:{role:'quality';actor:string;requirement:string;dueAt:string;reinspectAt:string;successCriteria:string;employee:{id:string;name:string;team:string;leader:string;problem:string;evidence:string}})=>call('/api/quality/collaborations',{method:'POST',body:JSON.stringify(payload)}),
  qualityPlanAction:(id:string,action:'update'|'close',payload:Record<string,number>={})=>call(`/api/quality/plans/${id}/action`,{method:'POST',body:JSON.stringify({role:'quality',action,...payload})}),
  createQualityRecord:(payload:{planId:string;callId:string;employeeId:string;employeeName:string;team:string;business:string;score:number;result:'passed'|'failed';severity:'none'|'minor'|'major'|'critical';problem:string;standard:string;evidence:string})=>call('/api/quality/records',{method:'POST',body:JSON.stringify({role:'quality',...payload})}),
@@ -260,6 +282,8 @@ export const workflowApi={
  createLearningSuggestion:(payload:{category:LearningSuggestion['category'];title:string;detail:string})=>call('/api/learning/suggestions',{method:'POST',body:JSON.stringify({role:'employee',employeeId:'JR10776',...payload})}),
  learningSuggestionAction:(id:string,action:'start'|'accept'|'reject'|'close',response:string)=>call(`/api/learning/suggestions/${id}/action`,{method:'POST',body:JSON.stringify({role:'training',action,response})}),
  growthReviewAction:(id:string,role:'training'|'leader',action:'training_submit'|'leader_close',comment:string)=>call(`/api/learning/growth-reviews/${id}/action`,{method:'POST',body:JSON.stringify({role,action,comment})}),
+ createDevelopmentCase:(payload:{role:DevelopmentRole;type:'training'|'interview';title:string;reason:string;goal:string;employeeId:string;responderRole:DevelopmentRole;dueAt:string})=>call('/api/development/cases',{method:'POST',body:JSON.stringify(payload)}),
+ developmentCaseAction:(id:string,role:DevelopmentRole,action:'accept'|'submit'|'verify_success'|'verify_return',comment:string)=>call(`/api/development/cases/${id}/action`,{method:'POST',body:JSON.stringify({role,action,comment})}),
  governanceShiftPlanAction:(id:string,role:'supervisor'|'manager',action:'submit'|'manager_approve'|'manager_return',comment='')=>call(`/api/governance/shift-plans/${id}/action`,{method:'POST',body:JSON.stringify({role,action,comment})}),
  governanceSkillRouteAction:(id:string,role:'supervisor'|'manager',action:'submit'|'manager_approve'|'manager_return'|'submit_effect',payload:Record<string,string|number>={})=>call(`/api/governance/skill-routes/${id}/action`,{method:'POST',body:JSON.stringify({role,action,...payload})}),
  governanceBudgetAction:(id:string,role:'manager'|'director',action:'manager_submit'|'director_approve'|'director_return',comment='')=>call(`/api/governance/budgets/${id}/action`,{method:'POST',body:JSON.stringify({role,action,comment})}),
@@ -268,7 +292,7 @@ export const workflowApi={
  createCrossDepartmentItem:(payload:{title:string;targetRole:'manager'|'supervisor'|'hrbp'|'quality'|'training';targetDepartment:string;detail:string;target:string;dueAt:string})=>call('/api/governance/cross-department',{method:'POST',body:JSON.stringify({role:'director',...payload})}),
  governanceCrossDepartmentAction:(id:string,role:'manager'|'supervisor'|'hrbp'|'quality'|'training'|'director',action:'start'|'submit_result'|'director_verify'|'director_return',result='')=>call(`/api/governance/cross-department/${id}/action`,{method:'POST',body:JSON.stringify({role,action,result})}),
  createWorkforceRequest:(payload:{role:string;kind:WorkforceRequestKind;title?:string;employeeId?:string;fromTeam?:string;toTeam?:string;date:string;detail:string;dueAt?:string})=>call('/api/workforce/requests',{method:'POST',body:JSON.stringify(payload)}),
- workforceRequestAction:(id:string,role:string,action:'leader_approve'|'leader_reject'|'supervisor_approve'|'supervisor_reject'|'manager_approve'|'manager_reject'|'hrbp_file',comment='')=>call(`/api/workforce/requests/${id}/action`,{method:'POST',body:JSON.stringify({role,action,comment})}),
+ workforceRequestAction:(id:string,role:string,action:'leader_approve'|'leader_reject'|'supervisor_approve'|'supervisor_reject'|'manager_acknowledge_warning'|'manager_approve'|'manager_reject'|'hrbp_file',comment='')=>call(`/api/workforce/requests/${id}/action`,{method:'POST',body:JSON.stringify({role,action,comment})}),
  taskAction:(id:string,role:string,action:string,payload:Record<string,string>={})=>call(`/api/tasks/${id}/action`,{method:'POST',body:JSON.stringify({role,action,...payload})}),
  simulateTimeout:(role:string)=>call('/api/simulate-timeout',{method:'POST',body:JSON.stringify({role})})
 }

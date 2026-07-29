@@ -1,4 +1,7 @@
 .env
+k8s/secret.yaml
+*.pem
+*.key
 .DS_Store
 .claude/
 claude 历史对话/

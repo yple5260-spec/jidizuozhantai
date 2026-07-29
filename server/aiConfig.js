@@ -33,7 +33,8 @@ const cleanBaseUrl=value=>{
 export function getAiConfig(){
  const stored=readStored()
  const hasStoredKey=Object.prototype.hasOwnProperty.call(stored,'apiKey')
- const apiKey=hasStoredKey?String(stored.apiKey||''):String(process.env.DEEPSEEK_API_KEY||'')
+ const environmentKey=String(process.env.DEEPSEEK_API_KEY||'').trim()
+ const apiKey=environmentKey||(hasStoredKey?String(stored.apiKey||''):'')
  const timeoutMs=Math.max(5000,Math.min(Number(stored.timeoutMs??process.env.DEEPSEEK_TIMEOUT_MS)||defaultConfig.timeoutMs,120000))
  return {
   provider:'DeepSeek',
@@ -41,7 +42,7 @@ export function getAiConfig(){
   model:String(stored.model||process.env.DEEPSEEK_MODEL||defaultConfig.model).trim(),
   baseUrl:cleanBaseUrl(stored.baseUrl||process.env.DEEPSEEK_BASE_URL||defaultConfig.baseUrl),
   timeoutMs,
-  source:hasStoredKey?'system':apiKey?'environment':'none',
+  source:environmentKey?'environment':hasStoredKey?'system':'none',
   updatedAt:stored.updatedAt||'',
   updatedBy:stored.updatedBy||'',
  }
@@ -64,12 +65,14 @@ export function publicAiConfig(){
 
 export function saveAiConfig(input={}){
  const stored=readStored()
+ const environmentKey=String(process.env.DEEPSEEK_API_KEY||'').trim()
  const model=String(input.model||stored.model||process.env.DEEPSEEK_MODEL||defaultConfig.model).trim()
  if(!model||model.length>80)throw Object.assign(new Error('模型名称不能为空或过长'),{status:400,code:'INVALID_AI_MODEL'})
  const baseUrl=cleanBaseUrl(input.baseUrl||stored.baseUrl||process.env.DEEPSEEK_BASE_URL||defaultConfig.baseUrl)
  const timeoutMs=Math.max(5000,Math.min(Number(input.timeoutMs)||defaultConfig.timeoutMs,120000))
  const next={...stored,provider:'DeepSeek',model,baseUrl,timeoutMs,updatedAt:new Date().toISOString(),updatedBy:String(input.actor||'系统管理员').slice(0,50)}
- if(input.clearApiKey===true)next.apiKey=''
+ if(environmentKey)delete next.apiKey
+ else if(input.clearApiKey===true)next.apiKey=''
  else if(typeof input.apiKey==='string'&&input.apiKey.trim())next.apiKey=input.apiKey.trim()
  fs.mkdirSync(dataDir,{recursive:true})
  fs.writeFileSync(tempFile,JSON.stringify(next,null,2),{encoding:'utf8',mode:0o600})

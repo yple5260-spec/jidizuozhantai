@@ -115,13 +115,13 @@ const initialPeople=()=>({
     {
       id:'HC-202607-10015',project:'10015升投',month:'2026-07',approvedHeadcount:502,activeHeadcount:486,
       targetOccupancy:98,actualOccupancy:96.8,hiringTarget:24,interviewed:41,offersAccepted:22,onboarded:18,gap:16,
-      owner:'HRBP经理 陈静',dueAt:'2026-07-31T18:00:00+08:00',status:'active',managerComment:'',
+      owner:'HRBP经理 王丽伟',dueAt:'2026-07-31T18:00:00+08:00',status:'active',managerComment:'',
       channels:[
         {name:'社会招聘',target:14,interviewed:26,accepted:12},
         {name:'内部推荐',target:6,interviewed:9,accepted:6},
         {name:'校企渠道',target:4,interviewed:6,accepted:4},
       ],
-      history:[{at:now(),actor:'HRBP经理 陈静',action:'根据目标编制、在岗人数和预计离职形成7月补员计划'}],
+      history:[{at:now(),actor:'HRBP经理 王丽伟',action:'根据目标编制、在岗人数和预计离职形成7月补员计划'}],
     },
   ],
   lifecycle:[
@@ -135,15 +135,15 @@ const initialPeople=()=>({
     {
       id:'LC-20260725-002',type:'transfer',title:'王芳班组调整申请',employeeId:'EMP-10913',employeeName:'王芳',personCount:1,employeeIds:['EMP-10913'],
       source:'HRBP组织盘点',fromOrg:'普通客服一区·8班',toOrg:'普通客服一区·6班',effectiveDate:dateKey(1),status:'hrbp_preparing',
-      ownerRole:'hrbp',owner:'HRBP经理 陈静',detail:'结合班组人力覆盖和员工适应情况，拟调整至6班；需确认交接、排班和直属班长。',
+      ownerRole:'hrbp',owner:'HRBP经理 王丽伟',detail:'结合班组人力覆盖和员工适应情况，拟调整至6班；需确认交接、排班和直属班长。',
       managerComment:'',result:'',checklist:{contract:true,medical:true,account:true,shift:false,team:false},
-      history:[{at:now(),actor:'HRBP经理 陈静',action:'创建员工调动事项并开始核对组织与排班信息'}],
+      history:[{at:now(),actor:'HRBP经理 王丽伟',action:'创建员工调动事项并开始核对组织与排班信息'}],
     },
   ],
   laborCases:[
     {
       id:'LR-20260725-001',type:'contract_renewal',employeeId:'JR10776',employeeName:'李倩',team:'普通客服一区·8班',
-      title:'劳动合同续签评估',risk:'medium',dueAt:'2026-07-29T17:30:00+08:00',status:'hrbp_todo',ownerRole:'hrbp',owner:'HRBP经理 陈静',
+      title:'劳动合同续签评估',risk:'medium',dueAt:'2026-07-29T17:30:00+08:00',status:'hrbp_todo',ownerRole:'hrbp',owner:'HRBP经理 王丽伟',
       detail:'合同将于30日内到期，需要核对绩效、出勤、员工续签意愿和用工部门意见。',result:'',
       history:[{at:now(),actor:'系统',action:'合同到期前30日自动生成续签评估事项'}],
     },
@@ -151,34 +151,34 @@ const initialPeople=()=>({
       id:'LR-20260725-002',type:'grievance',employeeId:'JR12068',employeeName:'张璐',team:'普通客服二区·3班',
       title:'排班公平性员工申诉',risk:'high',dueAt:new Date(Date.now()+8*60*60*1000).toISOString(),status:'manager_pending',ownerRole:'manager',owner:'运营经理',
       detail:'员工反馈连续夜班影响家庭安排，HRBP已完成事实核对，涉及业务资源调整和管理争议，升级经理裁决。',result:'',
-      history:[{at:now(),actor:'HRBP经理 陈静',action:'完成申诉受理与排班记录核对，升级运营经理裁决'}],
+      history:[{at:now(),actor:'HRBP经理 王丽伟',action:'完成申诉受理与排班记录核对，升级运营经理裁决'}],
     },
   ],
   costs:[
     {
       id:'COST-10015-202607',project:'10015升投',month:'2026-07',budget:4260000,actual:3478000,forecast:4326000,
       targetPerCapita:8765,actualPerCapita:8897,overtimeCost:168000,recruitmentCost:92000,gap:66000,updatedAt:now(),
-      history:[{at:now(),actor:'HRBP经理 陈静',action:'更新7月人员成本预测，预计超预算6.6万元'}],
+      history:[{at:now(),actor:'HRBP经理 王丽伟',action:'更新7月人员成本预测，预计超预算6.6万元'}],
     },
   ],
   interviews:[
     {
-      id:'INT-20260725-001',type:'probation',employeeId:'JR11005',employeeName:'孙雷',team:'普通客服一区·8班',interviewer:'HRBP经理 陈静',
+      id:'INT-20260725-001',type:'probation',employeeId:'JR11005',employeeName:'孙雷',team:'普通客服一区·8班',interviewer:'HRBP经理 王丽伟',
       scheduledAt:'2026-07-25T15:30:00+08:00',followUpAt:'2026-08-01T15:30:00+08:00',status:'planned',
       conclusion:'',commitments:[],linkedCaseId:'',
-      history:[{at:now(),actor:'HRBP经理 陈静',action:'创建入列第30天试用期访谈'}],
+      history:[{at:now(),actor:'HRBP经理 王丽伟',action:'创建入列第30天试用期访谈'}],
     },
     {
-      id:'INT-20260724-003',type:'retention',employeeId:'JR11832',employeeName:'赵凯',team:'普通客服一区·8班',interviewer:'HRBP经理 陈静',
+      id:'INT-20260724-003',type:'retention',employeeId:'JR11832',employeeName:'赵凯',team:'普通客服一区·8班',interviewer:'HRBP经理 王丽伟',
       scheduledAt:'2026-07-24T15:00:00+08:00',followUpAt:'2026-07-31T15:00:00+08:00',status:'followup_due',
       conclusion:'员工愿意留任，主要诉求是理解绩效构成并获得短周期目标辅导。',commitments:['班长连续一周提供目标辅导','HRBP一周后回访留任状态'],linkedCaseId:'HR-260723-004',
-      history:[{at:new Date(Date.now()-24*60*60*1000).toISOString(),actor:'HRBP经理 陈静',action:'完成留任访谈并形成双方承诺'},{at:now(),actor:'系统',action:'进入承诺回访窗口'}],
+      history:[{at:new Date(Date.now()-24*60*60*1000).toISOString(),actor:'HRBP经理 王丽伟',action:'完成留任访谈并形成双方承诺'},{at:now(),actor:'系统',action:'进入承诺回访窗口'}],
     },
   ],
 })
 
 const initialLearning=()=>({
-  version:1,
+  version:2,
   questionBanks:[
     {
       id:'QB-10015-RENEW-V4',title:'10015续约业务与争议处理',version:'V4.2',category:'业务规范',questionCount:38,targetQuestionCount:40,
@@ -257,6 +257,48 @@ const initialLearning=()=>({
         {label:'重复来电率',target:4,actual:4.2,unit:'%',higherBetter:false},
       ],
       history:[{at:now(),actor:'系统',action:'生成入列第90日能力与绩效综合评估计划'}],
+    },
+  ],
+  developmentCases:[
+    {
+      id:'DV-20260727-001',type:'training',title:'续约争议四步法强化训练',reason:'个人重复来电率高于目标0.2pp，需要结合真实录音强化关键步骤。',
+      goal:'完成课程与2通录音复盘，未来7日重复来电率降至4.0%以内。',employeeId:'JR10776',employeeName:'李倩',team:'普通客服一区·8班',
+      initiatorRole:'training',initiatorName:'培训主管 刘颖',responderRole:'employee',responderName:'李倩',ownerRole:'employee',verificationRole:'training',
+      status:'in_progress',dueAt:new Date(Date.now()+8*60*60*1000).toISOString(),createdAt:new Date(Date.now()-2*60*60*1000).toISOString(),
+      acknowledgement:'已接收任务，计划在今日15:00前完成课程和录音复盘。',result:'',verificationComment:'',
+      history:[{at:new Date(Date.now()-2*60*60*1000).toISOString(),actor:'培训主管 刘颖',action:'发起个人强化训练并明确效果目标'},{at:new Date(Date.now()-90*60*1000).toISOString(),actor:'李倩',action:'接收培训任务并反馈完成计划'}],
+    },
+    {
+      id:'DV-20260727-002',type:'interview',title:'月度目标与薪资成长面谈',reason:'当前产能接近目标但满意率距离五星标准0.6pp，需要共同拆解下一阶段目标。',
+      goal:'确认未来7日产能、满意率与营销三个行动目标，并形成每日复盘节奏。',employeeId:'JR10776',employeeName:'李倩',team:'普通客服一区·8班',
+      initiatorRole:'leader',initiatorName:'张伟',responderRole:'employee',responderName:'李倩',ownerRole:'leader',verificationRole:'leader',
+      status:'pending_verification',dueAt:new Date(Date.now()+5*60*60*1000).toISOString(),createdAt:new Date(Date.now()-20*60*60*1000).toISOString(),
+      acknowledgement:'已确认今日11:30进行目标面谈。',result:'已完成面谈，确认每日有效话务量≥95通、满意率≥97%、营销有效推荐≥8次，并由本人每日下班前复盘。',verificationComment:'',
+      history:[{at:new Date(Date.now()-20*60*60*1000).toISOString(),actor:'张伟',action:'发起月度目标面谈'},{at:new Date(Date.now()-4*60*60*1000).toISOString(),actor:'李倩',action:'完成面谈并向发起班长反馈行动承诺'}],
+    },
+    {
+      id:'DV-20260727-003',type:'training',title:'申请质检陪听与规范反馈',reason:'对续约承诺期边界仍不确定，希望质检结合本人真实录音给出判断。',
+      goal:'质检陪听2通录音，标注规范问题并给出可执行的标准话术建议。',employeeId:'JR10776',employeeName:'李倩',team:'普通客服一区·8班',
+      initiatorRole:'employee',initiatorName:'李倩',responderRole:'quality',responderName:'质检专员',ownerRole:'quality',verificationRole:'employee',
+      status:'pending_acceptance',dueAt:new Date(Date.now()+26*60*60*1000).toISOString(),createdAt:new Date(Date.now()-45*60*1000).toISOString(),
+      acknowledgement:'',result:'',verificationComment:'',
+      history:[{at:new Date(Date.now()-45*60*1000).toISOString(),actor:'李倩',action:'发起质检陪听培训需求，等待责任岗位回执'}],
+    },
+    {
+      id:'DV-20260726-004',type:'interview',title:'新人阶段适应与稳定回访',reason:'入职90日节点，需要确认工作适应、排班感受与后续发展诉求。',
+      goal:'完成结构化回访，明确需要协调的事项并完成员工确认。',employeeId:'JR10776',employeeName:'李倩',team:'普通客服一区·8班',
+      initiatorRole:'hrbp',initiatorName:'HRBP经理 王丽伟',responderRole:'employee',responderName:'李倩',ownerRole:'hrbp',verificationRole:'hrbp',
+      status:'closed',dueAt:new Date(Date.now()-18*60*60*1000).toISOString(),createdAt:new Date(Date.now()-2*24*60*60*1000).toISOString(),
+      acknowledgement:'已确认回访时间。',result:'工作适应稳定，希望增加营销产品知识训练；暂无离职倾向。',verificationComment:'回访结果有效，培训需求已转培训主管，纳入员工成长档案。',
+      history:[{at:new Date(Date.now()-2*24*60*60*1000).toISOString(),actor:'HRBP经理 王丽伟',action:'发起新人阶段回访'},{at:new Date(Date.now()-24*60*60*1000).toISOString(),actor:'李倩',action:'反馈阶段适应与发展诉求'},{at:new Date(Date.now()-23*60*60*1000).toISOString(),actor:'HRBP经理 王丽伟',action:'验收回访结果并关闭归档'}],
+    },
+    {
+      id:'DV-20260727-005',type:'training',title:'质检TOP问题班组补训',reason:'承诺期解释缺项在普通客服一区连续两日位列质检问题TOP1。',
+      goal:'完成8班全员补训，抽测规范率达到95%以上。',employeeId:'JR10913',employeeName:'王芳',team:'普通客服一区·8班',
+      initiatorRole:'quality',initiatorName:'质检专员',responderRole:'employee',responderName:'王芳',ownerRole:'employee',verificationRole:'quality',
+      status:'returned',dueAt:new Date(Date.now()+3*60*60*1000).toISOString(),createdAt:new Date(Date.now()-6*60*60*1000).toISOString(),
+      acknowledgement:'已完成知识卡片学习。',result:'已学习承诺期标准并复盘1通录音。',verificationComment:'反馈缺少第2通录音证据，请补齐后重新提交。',
+      history:[{at:new Date(Date.now()-6*60*60*1000).toISOString(),actor:'质检专员',action:'发起质检TOP问题补训'},{at:new Date(Date.now()-2*60*60*1000).toISOString(),actor:'王芳',action:'提交学习反馈'},{at:new Date(Date.now()-90*60*1000).toISOString(),actor:'质检专员',action:'验收未通过，退回补充第2通录音'}],
     },
   ],
 })
@@ -354,7 +396,30 @@ const initialState=()=>({
   governance:initialGovernance(),
 })
 
-const normalize=state=>({...state,reportRuns:Array.isArray(state.reportRuns)?state.reportRuns:[],reportDownloads:Array.isArray(state.reportDownloads)?state.reportDownloads:[],trainingReports:Array.isArray(state.trainingReports)?state.trainingReports:[],hrbpCases:Array.isArray(state.hrbpCases)?state.hrbpCases:initialState().hrbpCases,workforce:state.workforce&&Array.isArray(state.workforce.employees)&&Array.isArray(state.workforce.requests)?state.workforce:initialWorkforce(),training:state.training&&Array.isArray(state.training.cohorts)&&Array.isArray(state.training.trainees)&&Array.isArray(state.training.programs)?{...state.training,cohorts:state.training.cohorts.map(cohort=>({...cohort,forecastPassRate:Number(cohort.forecastPassRate)||88.5}))}:initialTraining(),quality:state.quality?.version===2&&Array.isArray(state.quality.plans)&&Array.isArray(state.quality.records)&&Array.isArray(state.quality.appeals)&&Array.isArray(state.quality.calibrations)&&Array.isArray(state.quality.cases)?state.quality:initialQuality(),people:state.people?.version===1&&Array.isArray(state.people.staffingPlans)&&Array.isArray(state.people.lifecycle)&&Array.isArray(state.people.laborCases)&&Array.isArray(state.people.costs)&&Array.isArray(state.people.interviews)?state.people:initialPeople(),learning:state.learning?.version===1&&Array.isArray(state.learning.questionBanks)&&Array.isArray(state.learning.sessions)&&Array.isArray(state.learning.assignments)&&Array.isArray(state.learning.suggestions)&&Array.isArray(state.learning.growthReviews)?state.learning:initialLearning(),governance:state.governance?.version===1&&Array.isArray(state.governance.shiftPlans)&&Array.isArray(state.governance.skillRoutes)&&Array.isArray(state.governance.budgets)&&Array.isArray(state.governance.contracts)&&Array.isArray(state.governance.meetings)&&Array.isArray(state.governance.crossDepartmentItems)?state.governance:initialGovernance()})
+const migrateHrbpManagerName=state=>JSON.parse(JSON.stringify(state).replaceAll('陈静','王丽伟'))
+const normalizeWorkforce=source=>{
+ const workforce=source&&Array.isArray(source.employees)&&Array.isArray(source.requests)?source:initialWorkforce()
+ return {...workforce,requests:workforce.requests.map(request=>{
+  if(request.kind!=='cross_team_dispatch'||request.status!=='manager_pending'||request.aiWarning!==undefined)return request
+  const coverage=workforce.coverage.find(item=>item.team===request.fromTeam)
+  if(!coverage)return {...request,aiWarning:null}
+  const projectedOnDuty=Math.max(0,coverage.onDuty-1)
+  const projectedRate=coverage.required?projectedOnDuty/coverage.required*100:0
+  if(projectedRate>=coverage.targetCoverage)return {...request,aiWarning:null}
+  return {...request,aiWarning:{
+   level:'warning',
+   message:`调出后${request.fromTeam}覆盖率预计为${projectedRate.toFixed(1)}%，低于${coverage.targetCoverage}%目标线`,
+   impact:`该方案可能使调出班组增加${Math.max(0,coverage.required-projectedOnDuty)}人人力缺口。AI仅提示目标偏差，不替代经理审批。`,
+   acknowledged:false,acknowledgedBy:'',acknowledgedAt:'',
+  }}
+ })}
+}
+const normalize=rawState=>{
+ const state=migrateHrbpManagerName(rawState)
+ const learningBase=state.learning&&Array.isArray(state.learning.questionBanks)&&Array.isArray(state.learning.sessions)&&Array.isArray(state.learning.assignments)&&Array.isArray(state.learning.suggestions)&&Array.isArray(state.learning.growthReviews)?state.learning:initialLearning()
+ const learning={...learningBase,version:2,developmentCases:Array.isArray(learningBase.developmentCases)?learningBase.developmentCases:initialLearning().developmentCases}
+ return {...state,reportRuns:Array.isArray(state.reportRuns)?state.reportRuns:[],reportDownloads:Array.isArray(state.reportDownloads)?state.reportDownloads:[],trainingReports:Array.isArray(state.trainingReports)?state.trainingReports:[],hrbpCases:Array.isArray(state.hrbpCases)?state.hrbpCases:initialState().hrbpCases,workforce:normalizeWorkforce(state.workforce),training:state.training&&Array.isArray(state.training.cohorts)&&Array.isArray(state.training.trainees)&&Array.isArray(state.training.programs)?{...state.training,cohorts:state.training.cohorts.map(cohort=>({...cohort,forecastPassRate:Number(cohort.forecastPassRate)||88.5}))}:initialTraining(),quality:state.quality?.version===2&&Array.isArray(state.quality.plans)&&Array.isArray(state.quality.records)&&Array.isArray(state.quality.appeals)&&Array.isArray(state.quality.calibrations)&&Array.isArray(state.quality.cases)?state.quality:initialQuality(),people:state.people?.version===1&&Array.isArray(state.people.staffingPlans)&&Array.isArray(state.people.lifecycle)&&Array.isArray(state.people.laborCases)&&Array.isArray(state.people.interviews)?state.people:initialPeople(),learning,governance:state.governance?.version===1&&Array.isArray(state.governance.shiftPlans)&&Array.isArray(state.governance.skillRoutes)&&Array.isArray(state.governance.budgets)&&Array.isArray(state.governance.contracts)&&Array.isArray(state.governance.meetings)&&Array.isArray(state.governance.crossDepartmentItems)?state.governance:initialGovernance()}
+}
 
 export function load(){
  if(!fs.existsSync(dataFile)){const s=initialState();save(s);return s}
@@ -364,7 +429,7 @@ export function load(){
   const parsed=JSON.parse(raw)
   if(!parsed.meta||!Array.isArray(parsed.events)||!Array.isArray(parsed.tasks)) throw new Error('状态文件结构不完整')
   const normalized=normalize(parsed)
-  if(!parsed.training||parsed.training.cohorts?.some(cohort=>!Number(cohort.forecastPassRate))||parsed.quality?.version!==2||parsed.people?.version!==1||parsed.learning?.version!==1||parsed.governance?.version!==1)save(normalized)
+  if(raw.includes('陈静')||!parsed.training||parsed.training.cohorts?.some(cohort=>!Number(cohort.forecastPassRate))||parsed.quality?.version!==2||parsed.people?.version!==1||parsed.learning?.version!==2||!Array.isArray(parsed.learning?.developmentCases)||parsed.governance?.version!==1)save(normalized)
   return normalized
  }catch(error){
   console.warn(`状态文件损坏，自动恢复：${error.message}`)

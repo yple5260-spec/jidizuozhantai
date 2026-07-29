@@ -12,6 +12,9 @@ import './workflow-quality.css'
 import './workforce.css'
 import './learning.css'
 import './operations.css'
+import './salary.css'
+import './lean-pdca.css'
+import './development.css'
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode><App /></React.StrictMode>

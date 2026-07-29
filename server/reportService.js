@@ -4,7 +4,7 @@ import crypto from 'node:crypto'
 
 export const projects=[
  {id:'hebei-return-10010',name:'河北回流10010',shortName:'10010',status:'template_ready',statusLabel:'模板就绪 · 待接数据',runnable:false,description:'已预置报表字段和运行接口，等待配置10010数据适配器。'},
- {id:'north-center-10015',name:'北方中心10015',shortName:'10015升投',status:'offline_cached_sample',statusLabel:'离线样本已接入',runnable:true,description:'基于两份线下日报的已核验缓存值和事实表样本。'},
+ {id:'north-center-10015',name:'北方中心10015',shortName:'10015升投',status:'live_database',statusLabel:'真实库已接入',runnable:true,description:'直连 ai_hack_s2 事实表；当前为上海/云南测试数据范围。'},
  {id:'unicom-online-400',name:'联通在线400',shortName:'400',status:'template_ready',statusLabel:'模板就绪 · 待接数据',runnable:false,description:'已预置报表字段和运行接口，等待配置400项目数据适配器。'},
 ]
 
@@ -178,8 +178,8 @@ export function buildCsv(preview){
 }
 
 const safeToken=value=>String(value).replace(/[^a-zA-Z0-9-]/g,'').slice(0,80)
-export function createRun({dataDir,state,projectId,reportType,requestedBy,requestedRole,now}){
- const preview=buildPreview(projectId,reportType)
+export function createRun({dataDir,state,projectId,reportType,requestedBy,requestedRole,now,preview:providedPreview}){
+ const preview=providedPreview||buildPreview(projectId,reportType)
  if(!preview.available)throw Object.assign(new Error('当前项目尚未接入数据源，不能生成正式报表'),{status:409,code:'REPORT_PROJECT_INTEGRATION_PENDING'})
  const started=Date.now()
  const id=`RP-${crypto.randomUUID()}`

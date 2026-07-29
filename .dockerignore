@@ -1,5 +1,10 @@
 node_modules
 dist
+.env
+.env.*
 *.log
 .DS_Store
-server/data/state.json
+server/data
+k8s/secret.yaml
+*.pem
+*.key

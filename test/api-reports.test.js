@@ -12,15 +12,16 @@ const getFreePort=()=>new Promise((resolve,reject)=>{const server=createNetServe
 async function startServer(){
  const dataDir=await mkdtemp(path.join(tmpdir(),'hebei-reports-'))
  const port=await getFreePort()
- const child=spawn(process.execPath,['server/server.js'],{cwd:projectRoot,env:{...process.env,API_PORT:String(port),DATA_DIR:dataDir},stdio:['ignore','pipe','pipe']})
+ const child=spawn(process.execPath,['server/server.js'],{cwd:projectRoot,env:{...process.env,NODE_ENV:'test',DATABASE_URL:'',API_PORT:String(port),DATA_DIR:dataDir,SESSION_SECRET:'test-session-secret-32-characters-minimum'},stdio:['ignore','pipe','pipe']})
  let output='';child.stdout.on('data',chunk=>output+=chunk);child.stderr.on('data',chunk=>output+=chunk)
  const listeningPort=await new Promise((resolve,reject)=>{const timeout=setTimeout(()=>reject(new Error(`服务启动超时：${output}`)),5000);child.stdout.on('data',chunk=>{const match=String(chunk).match(/localhost:(\d+)/);if(match){clearTimeout(timeout);resolve(Number(match[1]))}});child.once('exit',code=>{clearTimeout(timeout);reject(new Error(`服务提前退出 ${code}：${output}`))})})
  const base=`http://127.0.0.1:${listeningPort}`
  const rawRequest=async(method,pathname,payload,headers={})=>{const response=await fetch(`${base}${pathname}`,{method,headers:{'content-type':'application/json',...headers},body:payload===undefined?undefined:JSON.stringify(payload)});const text=await response.text();let data;try{data=JSON.parse(text)}catch{data=text}return {status:response.status,data,headers:response.headers,text}}
  const login=await rawRequest('POST','/api/auth/login',{jobNo:'JZ053684',password:'000000'})
- const cookie=login.headers.get('set-cookie').split(';')[0]
- const changed=await rawRequest('POST','/api/auth/change-password',{currentPassword:'000000',newPassword:'Admin2026!'},{cookie})
+ const loginCookie=login.headers.get('set-cookie').split(';')[0]
+ const changed=await rawRequest('POST','/api/auth/change-password',{currentPassword:'000000',newPassword:'Admin2026!'},{cookie:loginCookie})
  if(changed.status!==200)throw new Error(`测试管理员会话初始化失败：${JSON.stringify(changed.data)}`)
+ const cookie=changed.headers.get('set-cookie').split(';')[0]
  const request=(method,pathname,payload)=>rawRequest(method,pathname,payload,{cookie})
  return {base,dataDir,child,request,cookie,close:async()=>{child.kill('SIGTERM');await rm(dataDir,{recursive:true,force:true})}}
 }

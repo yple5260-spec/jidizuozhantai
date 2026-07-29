@@ -1,0 +1,80 @@
+CREATE TABLE IF NOT EXISTS platform_pdca_task_extension (
+  task_id VARCHAR(64) PRIMARY KEY,
+  initiator_role VARCHAR(32) NULL,
+  initiator_name VARCHAR(128) NULL,
+  execution_owner_role VARCHAR(32) NULL,
+  execution_owner_name VARCHAR(128) NULL,
+  issue_category VARCHAR(64) NULL,
+  issue_location VARCHAR(500) NULL,
+  metric_code VARCHAR(64) NULL,
+  metric_label VARCHAR(128) NULL,
+  metric_direction VARCHAR(16) NULL,
+  baseline_value DECIMAL(18,4) NULL,
+  target_value DECIMAL(18,4) NULL,
+  metric_unit VARCHAR(32) NULL,
+  planned_start_at DATETIME(3) NULL,
+  submit_due_at DATETIME(3) NULL,
+  verification_due_at DATETIME(3) NULL,
+  started_at DATETIME(3) NULL,
+  submitted_at DATETIME(3) NULL,
+  verified_at DATETIME(3) NULL,
+  ai_target_rationale TEXT NULL,
+  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  INDEX idx_pdca_extension_initiator (initiator_role),
+  INDEX idx_pdca_extension_execution_owner (execution_owner_role),
+  INDEX idx_pdca_extension_metric (metric_code),
+  CONSTRAINT fk_pdca_extension_task FOREIGN KEY (task_id) REFERENCES platform_pdca_task(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS platform_pdca_node (
+  id VARCHAR(128) PRIMARY KEY,
+  task_id VARCHAR(64) NOT NULL,
+  node_code VARCHAR(32) NOT NULL,
+  node_name VARCHAR(128) NOT NULL,
+  target_text TEXT NULL,
+  owner_role VARCHAR(32) NULL,
+  owner_name VARCHAR(128) NULL,
+  planned_at DATETIME(3) NULL,
+  completed_at DATETIME(3) NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'pending',
+  result_text TEXT NULL,
+  sequence_no INT NOT NULL DEFAULT 0,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  UNIQUE KEY uk_pdca_node_task_code (task_id,node_code),
+  INDEX idx_pdca_node_owner_status (owner_role,status),
+  CONSTRAINT fk_pdca_node_task FOREIGN KEY (task_id) REFERENCES platform_pdca_task(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS platform_pdca_attachment (
+  id VARCHAR(128) PRIMARY KEY,
+  task_id VARCHAR(64) NOT NULL,
+  node_code VARCHAR(32) NOT NULL,
+  file_name VARCHAR(255) NOT NULL,
+  mime_type VARCHAR(128) NOT NULL,
+  file_size BIGINT UNSIGNED NOT NULL,
+  content_blob LONGBLOB NOT NULL,
+  uploaded_by VARCHAR(128) NOT NULL,
+  uploaded_role VARCHAR(32) NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  INDEX idx_pdca_attachment_task_time (task_id,created_at),
+  CONSTRAINT fk_pdca_attachment_task FOREIGN KEY (task_id) REFERENCES platform_pdca_task(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS platform_pdca_metric_snapshot (
+  id VARCHAR(128) PRIMARY KEY,
+  task_id VARCHAR(64) NOT NULL,
+  metric_code VARCHAR(64) NOT NULL,
+  metric_label VARCHAR(128) NOT NULL,
+  actual_value DECIMAL(18,4) NULL,
+  target_value DECIMAL(18,4) NULL,
+  metric_unit VARCHAR(32) NULL,
+  metric_direction VARCHAR(16) NOT NULL DEFAULT 'higher',
+  snapshot_type VARCHAR(32) NOT NULL,
+  source_name VARCHAR(255) NULL,
+  observed_at DATETIME(3) NOT NULL,
+  note_text TEXT NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  INDEX idx_pdca_metric_task_time (task_id,observed_at),
+  CONSTRAINT fk_pdca_metric_task FOREIGN KEY (task_id) REFERENCES platform_pdca_task(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

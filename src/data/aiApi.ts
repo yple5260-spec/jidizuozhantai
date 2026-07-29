@@ -65,6 +65,8 @@ async function request<T>(path:string,options?:RequestInit):Promise<T>{
 export const aiApi={
  status:()=>request<AiSettings>('/api/ai/status'),
  settings:()=>request<AiSettings>('/api/ai/settings'),
+ history:(role:string)=>request<{messages:AiChatMessage[]}>(`/api/ai/history?role=${encodeURIComponent(role)}`),
+ clearHistory:(role:string)=>request<{ok:boolean}>(`/api/ai/history?role=${encodeURIComponent(role)}`,{method:'DELETE'}),
  saveSettings:(payload:{apiKey?:string;model:string;baseUrl:string;timeoutMs:number;clearApiKey?:boolean;actor:string})=>request<AiSettings>('/api/ai/settings',{
   method:'PUT',
   body:JSON.stringify(payload),

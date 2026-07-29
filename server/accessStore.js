@@ -1,12 +1,15 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto'
+import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto'
 import { dataDir } from './store.js'
+import { databaseConfigured, databaseQuery, databaseTransaction } from './database.js'
 
 const accessFile=path.join(dataDir,'access-control.json')
 const tempFile=path.join(dataDir,'access-control.tmp.json')
 const allowedMenus=['command','industry-news','settlement','alerts','meeting','team','workforce','tasks','reports','growth','salary','user-management','role-management','ai-settings']
 const now=()=>new Date().toISOString()
+let accessCache=null
+let databaseMode=false
 const fail=(status,message,code='ACCESS_VALIDATION_ERROR')=>{throw Object.assign(new Error(message),{status,code})}
 const uniqueMenus=menus=>Array.from(new Set((Array.isArray(menus)?menus:[]).filter(menu=>allowedMenus.includes(menu))))
 const hashPassword=password=>{
@@ -22,27 +25,33 @@ const verifyPassword=(password,encoded)=>{
 
 const roleSeeds=()=>[
  {id:'system-admin',name:'系统管理员',code:'SYSTEM_ADMIN',level:'系统级',description:'拥有全部业务模块和系统管理权限；内置角色不可删除。',memberCount:0,menus:[...allowedMenus],builtIn:true,status:'active'},
- {id:'operation-director',name:'运营总监',code:'OPERATION_DIRECTOR',level:'基地级',description:'关注基地经营、甲方动态、行业舆情、结费回款和组织效能。',memberCount:0,menus:['command','industry-news','settlement','alerts','workforce','tasks','reports','salary'],builtIn:true,status:'active'},
+ {id:'operation-director',name:'运营总监',code:'OPERATION_DIRECTOR',level:'基地级',description:'关注基地经营、甲方动态、行业舆情、结费回款和组织效能。',memberCount:0,menus:['command','industry-news','settlement','alerts','workforce','tasks','reports','growth','salary'],builtIn:true,status:'active'},
  {id:'customer-manager',name:'客服经理',code:'CUSTOMER_MANAGER',level:'业务线级',description:'负责业务KPI、组织效能、主管及班组管理。',memberCount:0,menus:['command','alerts','team','workforce','tasks','reports','growth'],builtIn:true,status:'active'},
  {id:'customer-supervisor',name:'客服主管',code:'CUSTOMER_SUPERVISOR',level:'区域级',description:'负责现场调度、绩效改善、班长履职和质量风险。',memberCount:0,menus:['command','alerts','meeting','team','workforce','tasks','reports','growth'],builtIn:true,status:'active'},
- {id:'team-leader',name:'客服班长',code:'TEAM_LEADER',level:'班组级',description:'负责班前会、班组看数、面谈辅导及任务闭环。',memberCount:0,menus:['command','alerts','meeting','team','workforce','tasks','reports','growth'],builtIn:true,status:'active'},
+ {id:'team-leader',name:'客服班长',code:'TEAM_LEADER',level:'班组级',description:'负责班前会、班组看数、面谈辅导及任务闭环。',memberCount:0,menus:['command','alerts','meeting','team','workforce','tasks','reports','growth','salary'],builtIn:true,status:'active'},
  {id:'customer-agent',name:'客服专员',code:'CUSTOMER_AGENT',level:'个人级',description:'查看个人绩效、培训任务、排班和薪资信息。',memberCount:0,menus:['command','workforce','tasks','growth','salary'],builtIn:true,status:'active'},
  {id:'quality-specialist',name:'质检专员',code:'QUALITY_SPECIALIST',level:'专业岗',description:'AI辅助质检、质量分析、合规事件和整改闭环。',memberCount:0,menus:['command','alerts','tasks','reports','growth'],builtIn:true,status:'active'},
  {id:'training-manager',name:'培训主管',code:'TRAINING_MANAGER',level:'专业岗',description:'培训需求、课程计划、AI教官及培训效果评估。',memberCount:0,menus:['command','tasks','reports','growth'],builtIn:true,status:'active'},
- {id:'hrbp-manager',name:'HRBP经理',code:'HRBP_MANAGER',level:'专业岗',description:'人员档案、流失预警、招聘缺口和组织效能。',memberCount:0,menus:['command','alerts','workforce','tasks','reports','salary'],builtIn:true,status:'active'},
+ {id:'hrbp-manager',name:'HRBP经理',code:'HRBP_MANAGER',level:'专业岗',description:'人员档案、流失预警、招聘缺口和组织效能。',memberCount:0,menus:['command','alerts','workforce','tasks','reports','growth','salary'],builtIn:true,status:'active'},
 ]
 
+const bootstrapPassword=()=>{
+ const value=String(process.env.BOOTSTRAP_ADMIN_PASSWORD||'').trim()
+ if(value.length>=8)return value
+ if(process.env.NODE_ENV==='test')return '000000'
+ throw Object.assign(new Error('首次部署必须通过 BOOTSTRAP_ADMIN_PASSWORD 提供至少8位的管理员初始密码'),{code:'BOOTSTRAP_PASSWORD_REQUIRED'})
+}
 const initialState=()=>({
- version:2,
+ version:4,
  users:[
-  {id:'U001',name:'李燕鹏',jobNo:'JZ053684',roleId:'system-admin',jobTitle:'运营总监',department:'河北基地 · 客户驱动部',phone:'',email:'',status:'active',passwordHash:hashPassword('000000'),forceChangePassword:true,moduleOverrides:[],createdAt:'2026-07-21',updatedAt:now()},
-  {id:'U002',name:'吴欣欣',jobNo:'JZ001218',roleId:'customer-manager',jobTitle:'客服经理',department:'河北基地 · 10015升投',phone:'',email:'',status:'active',passwordHash:hashPassword('000000'),forceChangePassword:true,moduleOverrides:[],createdAt:'2026-07-21',updatedAt:now()},
+  {id:'U001',name:String(process.env.BOOTSTRAP_ADMIN_NAME||(process.env.NODE_ENV==='test'?'李燕鹏':'系统管理员')).slice(0,40),jobNo:String(process.env.BOOTSTRAP_ADMIN_JOB_NO||(process.env.NODE_ENV==='test'?'JZ053684':'admin')).slice(0,40),roleId:'system-admin',jobTitle:'系统管理员',department:'河北基地',phone:'',email:'',status:'active',passwordHash:hashPassword(bootstrapPassword()),forceChangePassword:true,passwordChangedAt:'',failedLoginCount:0,lockedUntil:'',lastLoginAt:'',lastLoginIp:'',sessionVersion:1,moduleOverrides:[],createdAt:now(),updatedAt:now()},
+  ...(process.env.NODE_ENV==='test'?[{id:'U002',name:'测试经理',jobNo:'JZ001218',roleId:'customer-manager',jobTitle:'客服经理',department:'河北基地 · 10015升投',phone:'',email:'',status:'active',passwordHash:hashPassword('000000'),forceChangePassword:true,passwordChangedAt:'',failedLoginCount:0,lockedUntil:'',lastLoginAt:'',lastLoginIp:'',sessionVersion:1,moduleOverrides:[],createdAt:now(),updatedAt:now()}]:[]),
  ],
  roles:roleSeeds(),
  audit:[{at:now(),actor:'系统',action:'初始化用户与角色权限配置'}],
 })
 
-const write=state=>{
+const writeLocal=state=>{
  fs.mkdirSync(dataDir,{recursive:true})
  fs.writeFileSync(tempFile,JSON.stringify(state,null,2),{encoding:'utf8',mode:0o600})
  fs.renameSync(tempFile,accessFile)
@@ -50,8 +59,8 @@ const write=state=>{
  return state
 }
 
-export function loadAccess(){
- if(!fs.existsSync(accessFile))return write(initialState())
+const loadLocalAccess=()=>{
+ if(!fs.existsSync(accessFile))return writeLocal(initialState())
  try{
   const parsed=JSON.parse(fs.readFileSync(accessFile,'utf8'))
   if(!Array.isArray(parsed.users)||!Array.isArray(parsed.roles)||!Array.isArray(parsed.audit))throw new Error('权限文件结构不完整')
@@ -60,13 +69,116 @@ export function loadAccess(){
    parsed.roles.forEach(role=>{if(workforceRoles.has(role.id))role.menus=uniqueMenus([...(role.menus||[]),'workforce'])})
    parsed.version=2
    parsed.audit.unshift({at:now(),actor:'系统',action:'升级组织与排班模块岗位权限'})
-   return write(parsed)
   }
+  if(Number(parsed.version||1)<3){
+   const leaderRole=parsed.roles.find(role=>role.id==='team-leader')
+   if(leaderRole)leaderRole.menus=uniqueMenus([...(leaderRole.menus||[]),'salary'])
+   parsed.version=3
+   parsed.audit.unshift({at:now(),actor:'系统',action:'升级班长绩效与薪资目标管理权限'})
+  }
+  if(Number(parsed.version||1)<4){
+   for(const id of ['operation-director','hrbp-manager']){
+    const role=parsed.roles.find(item=>item.id===id)
+    if(role)role.menus=uniqueMenus([...(role.menus||[]),'growth'])
+   }
+   parsed.version=4
+   parsed.audit.unshift({at:now(),actor:'系统',action:'开放总监与HRBP培训面谈模块权限'})
+   return writeLocal(parsed)
+  }
+  parsed.users=parsed.users.map(user=>({...user,passwordChangedAt:user.passwordChangedAt||'',failedLoginCount:Number(user.failedLoginCount||0),lockedUntil:user.lockedUntil||'',lastLoginAt:user.lastLoginAt||'',lastLoginIp:user.lastLoginIp||'',sessionVersion:Number(user.sessionVersion||1)}))
   return parsed
  }catch(error){
   console.warn(`权限配置读取失败，自动恢复：${error.message}`)
-  return write(initialState())
+  return writeLocal(initialState())
  }
+}
+
+const parseJson=value=>{
+ if(Array.isArray(value))return value
+ if(value&&typeof value==='object')return value
+ try{return JSON.parse(value||'[]')}catch{return []}
+}
+const iso=value=>value?new Date(value).toISOString():''
+const accessFromDatabase=async()=>{
+ const [roles,users,audit]=await Promise.all([
+  databaseQuery('SELECT * FROM platform_system_role ORDER BY built_in DESC,id'),
+  databaseQuery('SELECT * FROM platform_system_user ORDER BY id'),
+  databaseQuery('SELECT actor_name AS actor,action_note AS action,created_at AS at FROM platform_access_audit ORDER BY created_at DESC LIMIT 500'),
+ ])
+ return {
+  version:5,
+  roles:roles.map(role=>({id:role.id,name:role.name,code:role.code,level:role.level_name,description:role.description_text||'',memberCount:0,menus:parseJson(role.menus_json),builtIn:Boolean(role.built_in),status:role.status})),
+  users:users.map(user=>({id:user.id,name:user.name,jobNo:user.job_no,roleId:user.role_id,jobTitle:user.job_title,department:user.department,phone:user.phone||'',email:user.email||'',status:user.status,passwordHash:user.password_hash,forceChangePassword:Boolean(user.force_change_password),passwordChangedAt:iso(user.password_changed_at),failedLoginCount:Number(user.failed_login_count||0),lockedUntil:iso(user.locked_until),lastLoginAt:iso(user.last_login_at),lastLoginIp:user.last_login_ip||'',sessionVersion:Number(user.session_version||1),moduleOverrides:parseJson(user.module_overrides_json),createdAt:iso(user.created_at),updatedAt:iso(user.updated_at)})),
+  audit:audit.map(item=>({at:iso(item.at),actor:item.actor,action:item.action})),
+ }
+}
+const persistAccess=state=>databaseTransaction(async connection=>{
+ for(const role of state.roles){
+  await connection.query(`
+   INSERT INTO platform_system_role
+    (id,name,code,level_name,description_text,menus_json,built_in,status)
+   VALUES (?,?,?,?,?,?,?,?)
+   ON DUPLICATE KEY UPDATE name=VALUES(name),level_name=VALUES(level_name),description_text=VALUES(description_text),
+    menus_json=VALUES(menus_json),built_in=VALUES(built_in),status=VALUES(status)`,[
+   role.id,role.name,role.code,role.level,role.description||'',JSON.stringify(role.menus||[]),role.builtIn?1:0,role.status,
+  ])
+ }
+ for(const user of state.users){
+  await connection.query(`
+   INSERT INTO platform_system_user
+    (id,name,job_no,role_id,job_title,department,phone,email,status,password_hash,force_change_password,
+     password_changed_at,failed_login_count,locked_until,last_login_at,last_login_ip,session_version,module_overrides_json,created_at,updated_at)
+   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+   ON DUPLICATE KEY UPDATE name=VALUES(name),job_no=VALUES(job_no),role_id=VALUES(role_id),job_title=VALUES(job_title),
+    department=VALUES(department),phone=VALUES(phone),email=VALUES(email),status=VALUES(status),password_hash=VALUES(password_hash),
+    force_change_password=VALUES(force_change_password),password_changed_at=VALUES(password_changed_at),
+    failed_login_count=VALUES(failed_login_count),locked_until=VALUES(locked_until),last_login_at=VALUES(last_login_at),
+    last_login_ip=VALUES(last_login_ip),session_version=VALUES(session_version),module_overrides_json=VALUES(module_overrides_json),
+    updated_at=VALUES(updated_at)`,[
+   user.id,user.name,user.jobNo,user.roleId,user.jobTitle,user.department,user.phone||null,user.email||null,user.status,user.passwordHash,
+   user.forceChangePassword?1:0,user.passwordChangedAt?new Date(user.passwordChangedAt):null,Number(user.failedLoginCount||0),
+   user.lockedUntil?new Date(user.lockedUntil):null,user.lastLoginAt?new Date(user.lastLoginAt):null,user.lastLoginIp||null,
+   Number(user.sessionVersion||1),JSON.stringify(user.moduleOverrides||[]),user.createdAt?new Date(user.createdAt):new Date(),user.updatedAt?new Date(user.updatedAt):new Date(),
+  ])
+ }
+ const dbUsers=await connection.query('SELECT id FROM platform_system_user')
+ for(const row of dbUsers[0])if(!state.users.some(item=>item.id===row.id))await connection.query('DELETE FROM platform_system_user WHERE id=?',[row.id])
+ const dbRoles=await connection.query('SELECT id FROM platform_system_role')
+ for(const row of dbRoles[0])if(!state.roles.some(item=>item.id===row.id))await connection.query('DELETE FROM platform_system_role WHERE id=?',[row.id])
+ for(const entry of state.audit||[]){
+  const fingerprint=createHash('sha256').update(`${entry.at}|${entry.actor}|${entry.action}`).digest('hex')
+  await connection.query('INSERT IGNORE INTO platform_access_audit(fingerprint,actor_name,action_code,action_note,created_at) VALUES (?,?,?,?,?)',[
+   fingerprint,entry.actor||'系统','access_change',entry.action||'未记录动作',entry.at?new Date(entry.at):new Date(),
+  ])
+ }
+})
+
+const commitAccess=async state=>{
+ if(databaseMode)await persistAccess(state)
+ else writeLocal(state)
+ accessCache=structuredClone(state)
+ return accessCache
+}
+
+export const initializeAccessPersistence=async()=>{
+ if(!databaseConfigured()){
+  databaseMode=false
+  accessCache=loadLocalAccess()
+  return {mode:'local',imported:false,users:accessCache.users.length}
+ }
+ const count=Number((await databaseQuery('SELECT COUNT(*) AS count FROM platform_system_role'))[0]?.count||0)
+ if(!count){
+  const seed=fs.existsSync(accessFile)?loadLocalAccess():initialState()
+  await persistAccess(seed)
+ }
+ accessCache=await accessFromDatabase()
+ databaseMode=true
+ return {mode:'mysql',imported:!count,users:accessCache.users.length}
+}
+
+export function loadAccess(){
+ if(!accessCache)accessCache=loadLocalAccess()
+ return structuredClone(accessCache)
 }
 
 const publicUser=user=>{
@@ -86,19 +198,28 @@ export function requirePermission(state,actorUserId,permission){
  return actor
 }
 
-export function authenticate(jobNo,password){
+export async function authenticate(jobNo,password,clientIp=''){
  const state=loadAccess(),normalized=String(jobNo||'').trim().toLowerCase()
  const user=state.users.find(item=>item.jobNo.toLowerCase()===normalized)
- if(!user||!verifyPassword(password,user.passwordHash))fail(401,'账号或密码不正确','AUTH_INVALID_CREDENTIALS')
+ if(!user)fail(401,'账号或密码不正确','AUTH_INVALID_CREDENTIALS')
+ if(user.lockedUntil&&Date.parse(user.lockedUntil)>Date.now())fail(423,'账号因连续登录失败暂时锁定，请稍后重试','AUTH_ACCOUNT_LOCKED')
+ if(!verifyPassword(password,user.passwordHash)){
+  user.failedLoginCount=Number(user.failedLoginCount||0)+1
+  if(user.failedLoginCount>=5)user.lockedUntil=new Date(Date.now()+15*60*1000).toISOString()
+  state.audit.unshift({at:now(),actor:user.name,action:`登录失败${user.failedLoginCount}次${user.lockedUntil?'，账号暂时锁定':''}`})
+  await commitAccess(state)
+  fail(401,'账号或密码不正确','AUTH_INVALID_CREDENTIALS')
+ }
  if(user.status!=='active')fail(403,'账号已停用，请联系系统管理员','AUTH_ACCOUNT_DISABLED')
  const role=state.roles.find(item=>item.id===user.roleId)
  if(!role||role.status!=='active')fail(403,'账号角色已停用，请联系系统管理员','AUTH_ROLE_DISABLED')
+ user.failedLoginCount=0;user.lockedUntil='';user.lastLoginAt=now();user.lastLoginIp=String(clientIp||'').slice(0,64);user.updatedAt=now()
  state.audit.unshift({at:now(),actor:user.name,action:'登录河北基地运营管理平台'})
- write(state)
+ await commitAccess(state)
  return publicUser(user)
 }
 
-export function changePassword(userId,currentPassword,newPassword){
+export async function changePassword(userId,currentPassword,newPassword){
  const state=loadAccess(),user=state.users.find(item=>item.id===userId)
  if(!user)fail(404,'用户不存在')
  if(!verifyPassword(currentPassword,user.passwordHash))fail(400,'当前密码不正确','AUTH_CURRENT_PASSWORD_INVALID')
@@ -106,13 +227,21 @@ export function changePassword(userId,currentPassword,newPassword){
  if(next.length<8)fail(400,'新密码至少需要8位')
  if(verifyPassword(next,user.passwordHash))fail(400,'新密码不能与当前密码相同')
  const firstLogin=user.forceChangePassword
- user.passwordHash=hashPassword(next);user.forceChangePassword=false;user.updatedAt=now()
+ user.passwordHash=hashPassword(next);user.forceChangePassword=false;user.passwordChangedAt=now();user.sessionVersion=Number(user.sessionVersion||1)+1;user.updatedAt=now()
  state.audit.unshift({at:now(),actor:user.name,action:firstLogin?'完成首次登录密码修改':'修改登录密码'})
- write(state)
+ await commitAccess(state)
  return publicUser(user)
 }
 
-export function saveUser(input,actorUserId){
+export async function revokeSessions(userId){
+ const state=loadAccess(),user=state.users.find(item=>item.id===userId)
+ if(!user)return
+ user.sessionVersion=Number(user.sessionVersion||1)+1
+ user.updatedAt=now()
+ await commitAccess(state)
+}
+
+export async function saveUser(input,actorUserId){
  const state=loadAccess(),actor=requirePermission(state,actorUserId,'user-management')
  const id=String(input.id||'').trim(),existing=state.users.find(user=>user.id===id)
  const required=['name','jobNo','jobTitle','department','roleId']
@@ -123,38 +252,42 @@ export function saveUser(input,actorUserId){
  if(state.users.some(user=>user.id!==id&&user.jobNo.toLowerCase()===jobNo.toLowerCase()))fail(409,`工号 ${jobNo} 已存在`)
  const password=String(input.password||'')
  if(!existing&&!password)fail(400,'新增用户必须设置初始密码')
- if(password&&password.length<6)fail(400,'初始密码至少需要6位')
+ if(password&&password.length<8)fail(400,'初始密码至少需要8位')
  const record={
   id:existing?.id||nextUserId(state.users),name:String(input.name).trim().slice(0,40),jobNo:jobNo.slice(0,40),roleId:role.id,
   jobTitle:String(input.jobTitle).trim().slice(0,80),department:String(input.department).trim().slice(0,120),
   phone:String(input.phone||'').trim().slice(0,30),email:String(input.email||'').trim().slice(0,120),
   status:input.status==='disabled'?'disabled':'active',passwordHash:password?hashPassword(password):existing.passwordHash,
-  forceChangePassword:password?true:Boolean(existing?.forceChangePassword),moduleOverrides:uniqueMenus(input.moduleOverrides),
+  forceChangePassword:password?true:Boolean(existing?.forceChangePassword),passwordChangedAt:password?'':existing?.passwordChangedAt||'',
+  failedLoginCount:0,lockedUntil:'',lastLoginAt:existing?.lastLoginAt||'',lastLoginIp:existing?.lastLoginIp||'',
+  sessionVersion:Number(existing?.sessionVersion||1)+(password?1:0),moduleOverrides:uniqueMenus(input.moduleOverrides),
   createdAt:existing?.createdAt||now().slice(0,10),updatedAt:now(),
  }
  if(existing)state.users=state.users.map(user=>user.id===existing.id?record:user)
  else state.users.push(record)
  state.audit.unshift({at:now(),actor:actor.name,action:`${existing?'更新':'创建'}用户${record.name}（${record.jobNo}）`})
- return publicAccess(write(state))
+ return publicAccess(await commitAccess(state))
 }
 
-export function userAction(id,action,actorUserId){
+export async function userAction(id,action,actorUserId,options={}){
  const state=loadAccess(),actor=requirePermission(state,actorUserId,'user-management')
  const user=state.users.find(item=>item.id===id)
  if(!user)fail(404,'用户不存在')
  if(action==='toggle_status'){
   if(user.id===actor.id&&user.status==='active')fail(409,'不能停用当前操作账号')
   if(user.roleId==='system-admin'&&user.status==='active'&&state.users.filter(item=>item.roleId==='system-admin'&&item.status==='active').length<=1)fail(409,'至少需要保留一个启用的系统管理员')
-  user.status=user.status==='active'?'disabled':'active';user.updatedAt=now()
+  user.status=user.status==='active'?'disabled':'active';user.sessionVersion=Number(user.sessionVersion||1)+1;user.updatedAt=now()
   state.audit.unshift({at:now(),actor:actor.name,action:`${user.status==='active'?'启用':'停用'}用户${user.name}（${user.jobNo}）`})
  }else if(action==='reset_password'){
-  user.passwordHash=hashPassword('000000');user.forceChangePassword=true;user.updatedAt=now()
+  const temporaryPassword=String(options.temporaryPassword||'')
+  if(temporaryPassword.length<8)fail(400,'请设置至少8位的一次性初始密码')
+  user.passwordHash=hashPassword(temporaryPassword);user.forceChangePassword=true;user.passwordChangedAt='';user.failedLoginCount=0;user.lockedUntil='';user.sessionVersion=Number(user.sessionVersion||1)+1;user.updatedAt=now()
   state.audit.unshift({at:now(),actor:actor.name,action:`重置用户${user.name}密码并要求首次登录改密`})
  }else fail(400,'不支持的用户操作')
- return publicAccess(write(state))
+ return publicAccess(await commitAccess(state))
 }
 
-export function saveRole(input,actorUserId){
+export async function saveRole(input,actorUserId){
  const state=loadAccess(),actor=requirePermission(state,actorUserId,'role-management')
  const existing=state.roles.find(role=>role.id===input.id)
  const name=String(input.name||'').trim(),code=String(input.code||'').trim().toUpperCase(),menus=uniqueMenus(input.menus)
@@ -172,10 +305,10 @@ export function saveRole(input,actorUserId){
  if(existing)state.roles=state.roles.map(role=>role.id===existing.id?record:role)
  else state.roles.push(record)
  state.audit.unshift({at:now(),actor:actor.name,action:`${existing?'更新':'创建'}角色${record.name}（${record.code}）`})
- return publicAccess(write(state))
+ return publicAccess(await commitAccess(state))
 }
 
-export function deleteRole(id,actorUserId){
+export async function deleteRole(id,actorUserId){
  const state=loadAccess(),actor=requirePermission(state,actorUserId,'role-management')
  const role=state.roles.find(item=>item.id===id)
  if(!role)fail(404,'角色不存在')
@@ -184,7 +317,7 @@ export function deleteRole(id,actorUserId){
  if(count)fail(409,`该角色仍关联${count}名用户，请先重新分配账号`)
  state.roles=state.roles.filter(item=>item.id!==id)
  state.audit.unshift({at:now(),actor:actor.name,action:`删除角色${role.name}（${role.code}）`})
- return publicAccess(write(state))
+ return publicAccess(await commitAccess(state))
 }
 
 const nextUserId=users=>{
@@ -198,5 +331,5 @@ const nextRoleId=(roles,code)=>{
  return id
 }
 
-export function resetAccess(){return publicAccess(write(initialState()))}
+export async function resetAccess(){return publicAccess(await commitAccess(initialState()))}
 export { accessFile, allowedMenus }
