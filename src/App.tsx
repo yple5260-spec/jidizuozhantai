@@ -3,7 +3,7 @@ import type { FormEvent } from 'react'
 import companyLogo from './assets/company-logo.svg'
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Line, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { roles, metrics, members, trendData, industryNews, settlements } from './data/mock'
-import { HrbpCaseRecord, HrbpCaseStatus, workflowApi, WorkflowState } from './data/workflowApi'
+import { applyWorkflowMutation, HrbpCaseRecord, HrbpCaseStatus, workflowApi, WorkflowMutationResult, WorkflowState } from './data/workflowApi'
 import { openWorkflowTaskCount, pendingWorkflowEventCount, workflowAlerts, workflowTasks } from './data/workflowView'
 import { MorningEmployee, reportApi } from './data/reportApi'
 import { AiActionDraft, AiChatMessage, AiSettings, aiApi } from './data/aiApi'
@@ -18,9 +18,15 @@ import { EmployeeLearningHub, LeaderLearningApprovals, TrainingLearningHub } fro
 import DevelopmentWorkHub from './components/DevelopmentWorkHub'
 import { DirectorGovernanceHub, ManagerGovernanceApprovals, RoleCrossDepartmentTasks, SupervisorOperationsHub } from './components/OperationsGovernanceHub'
 import SalaryPerformanceHub from './components/SalaryPerformanceHub'
-import { LeanPdcaDashboard, LeanTaskActions, LeanTaskBrief, LeanTaskNodes, TaskAttachments, TaskImprovementPanel } from './components/LeanPdcaFeatures'
-import { Alert, Role, SystemRole, SystemUser, TaskItem } from './types'
+import { LeanPdcaDashboard, LeanTaskActions, LeanTaskBrief, LeanTaskManagementPanel, LeanTaskNodes, TaskAttachments, TaskComments, TaskImprovementPanel, workflowTaskVisibleForRole } from './components/LeanPdcaFeatures'
+import TeamActionTools, { TeamActionMember } from './components/TeamActionTools'
+import OrganizationDirectoryPanel from './components/OrganizationDirectoryPanel'
+import ExcellenceHub from './components/ExcellenceHub'
+import BudgetAchievementPanel from './components/BudgetAchievementPanel'
+import MorningBriefingHub from './components/MorningBriefingHub'
+import { Alert, OrganizationDirectory, Role, SystemRole, SystemUser, TaskItem } from './types'
 import { Activity, AlertTriangle, BarChart3, Bell, BookOpenCheck, Bot, BriefcaseBusiness, Building2, CheckCircle2, ChevronDown, ChevronRight, CircleDollarSign, ClipboardCheck, Clock3, Command, Database, Edit3, Eye, EyeOff, FileBarChart, Gauge, GraduationCap, Headphones, KeyRound, LayoutDashboard, ListChecks, LockKeyhole, Mail, Menu, MessageSquareText, Newspaper, PanelLeftClose, Phone, Plus, RadioTower, ReceiptText, RefreshCw, Save, Search, Send, Settings, ShieldCheck, Sparkles, Target, Trash2, UserCog, UserPlus, Users, UserRoundSearch, WalletCards, X, Zap, CalendarDays, TrendingUp, TrendingDown, ArrowUpRight, Play, MoreHorizontal } from './components/Icons'
+import { Award } from './components/Icons'
 
 const nav = [
   {id:'command',label:'今日作战',icon:Command},
@@ -31,30 +37,34 @@ const nav = [
   {id:'team',label:'班组看数',icon:Users},
   {id:'workforce',label:'组织与排班',icon:CalendarDays},
   {id:'tasks',label:'PDCA任务',icon:ListChecks},
+  {id:'excellence',label:'固化先进',icon:Award},
   {id:'reports',label:'RPA报表',icon:FileBarChart},
   {id:'growth',label:'培训与面谈',icon:GraduationCap},
   {id:'salary',label:'绩效与薪资',icon:CircleDollarSign},
 ]
 
 const systemUsersSeed: SystemUser[] = [
-  {id:'U001',name:'李燕鹏',jobNo:'JZ053684',roleId:'system-admin',jobTitle:'运营总监',department:'河北基地 · 客户驱动部',phone:'',email:'',status:'active',password:'',forceChangePassword:true,moduleOverrides:[],createdAt:'2026-07-21'},
-  {id:'U002',name:'吴欣欣',jobNo:'JZ001218',roleId:'customer-manager',jobTitle:'客服经理',department:'河北基地 · 10015升投',phone:'',email:'',status:'active',password:'',forceChangePassword:true,moduleOverrides:[],createdAt:'2026-07-21'},
+  {id:'U001',name:'李燕鹏',jobNo:'JZ053684',roleId:'system-admin',jobTitle:'运营管理总监',department:'河北基地 · 客户驱动部',phone:'',email:'',status:'active',password:'',forceChangePassword:true,moduleOverrides:[],createdAt:'2026-07-21'},
+  {id:'U002',name:'吴欣欣',jobNo:'JZ001218',roleId:'customer-manager',jobTitle:'运营经理',department:'河北基地',phone:'',email:'',status:'active',password:'',forceChangePassword:true,moduleOverrides:[],createdAt:'2026-07-21'},
 ]
 
 const systemRolesSeed: SystemRole[] = [
-  {id:'system-admin',name:'系统管理员',code:'SYSTEM_ADMIN',level:'系统级',description:'拥有全部业务模块和系统管理权限；内置角色不可删除。',memberCount:0,menus:['command','industry-news','settlement','alerts','meeting','team','workforce','tasks','reports','growth','salary','user-management','role-management','ai-settings'],builtIn:true,status:'active'},
-  {id:'operation-director',name:'运营总监',code:'OPERATION_DIRECTOR',level:'基地级',description:'关注基地经营、甲方动态、行业舆情、结费回款和组织效能。',memberCount:1,menus:['command','industry-news','settlement','alerts','workforce','tasks','reports','growth','salary'],builtIn:true,status:'active'},
-  {id:'customer-manager',name:'客服经理',code:'CUSTOMER_MANAGER',level:'业务线级',description:'负责业务KPI、组织效能、主管及班组管理。',memberCount:1,menus:['command','alerts','team','workforce','tasks','reports','growth'],builtIn:true,status:'active'},
-  {id:'customer-supervisor',name:'客服主管',code:'CUSTOMER_SUPERVISOR',level:'区域级',description:'负责现场调度、绩效改善、班长履职和质量风险。',memberCount:4,menus:['command','alerts','meeting','team','workforce','tasks','reports','growth'],builtIn:true,status:'active'},
-  {id:'team-leader',name:'客服班长',code:'TEAM_LEADER',level:'班组级',description:'负责班前会、班组看数、面谈辅导及任务闭环。',memberCount:28,menus:['command','alerts','meeting','team','workforce','tasks','reports','growth','salary'],builtIn:true,status:'active'},
-  {id:'customer-agent',name:'客服专员',code:'CUSTOMER_AGENT',level:'个人级',description:'查看个人绩效、培训任务、排班和薪资信息。',memberCount:438,menus:['command','workforce','tasks','growth','salary'],builtIn:true,status:'active'},
-  {id:'quality-specialist',name:'质检专员',code:'QUALITY_SPECIALIST',level:'专业岗',description:'AI辅助质检、质量分析、合规事件和整改闭环。',memberCount:8,menus:['command','alerts','tasks','reports','growth'],builtIn:true,status:'active'},
-  {id:'training-manager',name:'培训主管',code:'TRAINING_MANAGER',level:'专业岗',description:'培训需求、课程计划、AI教官及培训效果评估。',memberCount:3,menus:['command','tasks','reports','growth'],builtIn:true,status:'active'},
+  {id:'system-admin',name:'系统管理员',code:'SYSTEM_ADMIN',level:'系统级',description:'拥有全部业务模块和系统管理权限；内置角色不可删除。',memberCount:0,menus:['command','industry-news','settlement','alerts','meeting','team','workforce','tasks','excellence','reports','growth','salary','user-management','role-management','ai-settings'],builtIn:true,status:'active'},
+  {id:'operation-director',name:'运营总监',code:'OPERATION_DIRECTOR',level:'基地级',description:'关注基地经营、甲方动态、行业舆情、结费回款和组织效能。',memberCount:1,menus:['command','industry-news','settlement','alerts','workforce','tasks','excellence','reports','growth','salary'],builtIn:true,status:'active'},
+  {id:'customer-manager',name:'客服经理',code:'CUSTOMER_MANAGER',level:'业务线级',description:'负责业务KPI、组织效能、主管及班组管理。',memberCount:1,menus:['command','alerts','team','workforce','tasks','excellence','reports','growth'],builtIn:true,status:'active'},
+  {id:'customer-supervisor',name:'客服主管',code:'CUSTOMER_SUPERVISOR',level:'区域级',description:'负责现场调度、绩效改善、班长履职和质量风险。',memberCount:4,menus:['command','alerts','meeting','team','workforce','tasks','excellence','reports','growth'],builtIn:true,status:'active'},
+  {id:'team-leader',name:'客服班长',code:'TEAM_LEADER',level:'班组级',description:'负责班前会、班组看数、面谈辅导及任务闭环。',memberCount:28,menus:['command','alerts','meeting','team','workforce','tasks','excellence','reports','growth','salary'],builtIn:true,status:'active'},
+  {id:'customer-agent',name:'客服专员',code:'CUSTOMER_AGENT',level:'个人级',description:'查看个人绩效、培训任务、排班、先进经验和薪资信息。',memberCount:438,menus:['command','workforce','tasks','excellence','growth','salary'],builtIn:true,status:'active'},
+  {id:'quality-specialist',name:'质检专员',code:'QUALITY_SPECIALIST',level:'专业岗',description:'AI辅助质检、质量分析、先进录音和整改闭环。',memberCount:8,menus:['command','alerts','tasks','excellence','reports','growth'],builtIn:true,status:'active'},
+  {id:'training-manager',name:'培训主管',code:'TRAINING_MANAGER',level:'专业岗',description:'培训需求、课程计划、AI教官及培训效果评估。',memberCount:3,menus:['command','tasks','excellence','reports','growth'],builtIn:true,status:'active'},
   {id:'hrbp-manager',name:'HRBP经理',code:'HRBP_MANAGER',level:'专业岗',description:'人员档案、流失预警、招聘缺口和组织效能。',memberCount:2,menus:['command','alerts','workforce','tasks','reports','growth','salary'],builtIn:true,status:'active'},
+  {id:'operations-support',name:'运营支持',code:'OPERATIONS_SUPPORT',level:'专业岗',description:'适用于调度、数据、知识、工号和专项管理岗位；默认采用最小权限，可按账号追加模块。',memberCount:23,menus:['command','tasks','reports'],builtIn:true,status:'active'},
 ]
 
+const emptyOrganization:OrganizationDirectory={version:1,source:{fileName:'组织与架构.xlsx',importedAt:'',scope:'河北基地',totalMembers:0,containsContactDetails:false},projects:[],roleStats:[],members:[]}
+
 const menuCatalog = [
- {id:'command',label:'今日作战'},{id:'industry-news',label:'客户行业动态'},{id:'settlement',label:'结算管理'},{id:'alerts',label:'AI预警中心'},{id:'meeting',label:'班前会'},{id:'team',label:'班组看数'},{id:'workforce',label:'组织与排班'},{id:'tasks',label:'PDCA任务'},{id:'reports',label:'RPA报表'},{id:'growth',label:'培训与面谈'},{id:'salary',label:'绩效与薪资'},{id:'user-management',label:'用户管理'},{id:'role-management',label:'角色管理'},{id:'ai-settings',label:'AI模型配置'}
+ {id:'command',label:'今日作战'},{id:'industry-news',label:'客户行业动态'},{id:'settlement',label:'结算管理'},{id:'alerts',label:'AI预警中心'},{id:'meeting',label:'班前会'},{id:'team',label:'班组看数'},{id:'workforce',label:'组织与排班'},{id:'tasks',label:'PDCA任务'},{id:'excellence',label:'固化先进'},{id:'reports',label:'RPA报表'},{id:'growth',label:'培训与面谈'},{id:'salary',label:'绩效与薪资'},{id:'user-management',label:'用户管理'},{id:'role-management',label:'角色管理'},{id:'ai-settings',label:'AI模型配置'}
 ]
 
 const roleRuntimeMap: Record<Role,string> = {
@@ -66,7 +76,14 @@ const representativeUserMap: Partial<Record<Role,string>> = {
   manager:'U002',
 }
 const authRoleMap:Record<string,Role>={
- 'system-admin':'director','operation-director':'director','customer-manager':'manager','customer-supervisor':'supervisor','team-leader':'leader','customer-agent':'employee','quality-specialist':'quality','training-manager':'training','hrbp-manager':'hrbp'
+ 'system-admin':'director','operation-director':'director','customer-manager':'manager','customer-supervisor':'supervisor','team-leader':'leader','customer-agent':'employee','quality-specialist':'quality','training-manager':'training','hrbp-manager':'hrbp','operations-support':'employee'
+}
+const lastLoginJobNoKey='hebei-operations-last-login-job-no'
+const readLastLoginJobNo=()=>{
+ try{return window.localStorage.getItem(lastLoginJobNoKey)?.trim()||''}catch{return ''}
+}
+const rememberLastLoginJobNo=(jobNo:string)=>{
+ try{window.localStorage.setItem(lastLoginJobNoKey,jobNo.trim())}catch{}
 }
 
 const roleModeLabel: Record<Role,string> = {
@@ -81,6 +98,7 @@ type TrainingReportState={sent:boolean;read:boolean;generatedAt:string;reportNo:
 type HrbpCase=HrbpCaseRecord
 type HrbpAction=Parameters<typeof workflowApi.hrbpCaseAction>[2]
 type HrbpActionRunner=(id:string,role:'hrbp'|'manager',action:HrbpAction,note?:string,success?:string)=>Promise<boolean>
+type WorkflowRunner=(action:()=>Promise<WorkflowMutationResult>,success:string)=>void|boolean|Promise<void|boolean>
 const assistantGreeting:AiChatMessage={role:'assistant',content:'你好，我是AI作战助手。可以和我讨论指标差距、重点员工、班前会内容或PDCA行动，我会结合当前岗位与页面数据给出建议。'}
 const initialAssistantThreads=()=>Object.fromEntries(roles.map(item=>[item.id,[assistantGreeting]])) as Record<Role,AiChatMessage[]>
 
@@ -92,6 +110,7 @@ function App(){
   const [role,setRole]=useState<Role>('leader')
   const [page,setPage]=useState('command')
   const [roleOpen,setRoleOpen]=useState(false)
+  const [passwordDialogOpen,setPasswordDialogOpen]=useState(false)
   const [selectedAlertId,setSelectedAlertId]=useState('')
   const [toast,setToast]=useState('')
   const [assistantOpen,setAssistantOpen]=useState(false)
@@ -106,6 +125,7 @@ function App(){
   const [systemOpen,setSystemOpen]=useState(true)
   const [systemUsers,setSystemUsers]=useState<SystemUser[]>(systemUsersSeed)
   const [systemRoles,setSystemRoles]=useState<SystemRole[]>(systemRolesSeed)
+  const [organization,setOrganization]=useState<OrganizationDirectory>(emptyOrganization)
   const [accessBusy,setAccessBusy]=useState(false)
   const [accessError,setAccessError]=useState('')
   const [notificationOpen,setNotificationOpen]=useState(false)
@@ -115,7 +135,6 @@ function App(){
   const [workflowBusy,setWorkflowBusy]=useState(false)
   const [realData,setRealData]=useState<RealDataState|null>(null)
   const [realDataError,setRealDataError]=useState('')
-  const [demoRevision,setDemoRevision]=useState(0)
   const [searchOpen,setSearchOpen]=useState(false)
   const [searchQuery,setSearchQuery]=useState('')
   const searchInputRef=useRef<HTMLInputElement>(null)
@@ -171,7 +190,7 @@ function App(){
   useEffect(()=>{if(searchOpen)window.setTimeout(()=>searchInputRef.current?.focus(),0)},[searchOpen])
 
   useEffect(()=>{
-    authApi.session().then(session=>{setAuth(session);setRole(authRoleMap[session.role.id]||'employee');setAuthError('')}).catch(()=>setAuth(null)).finally(()=>setAuthLoading(false))
+    authApi.session().then(session=>{rememberLastLoginJobNo(session.user.jobNo);setAuth(session);setRole(authRoleMap[session.role.id]||'employee');setAuthError('')}).catch(()=>setAuth(null)).finally(()=>setAuthLoading(false))
   },[])
   useEffect(()=>{
     if(!auth||auth.requiresPasswordChange){setWorkflow(null);return}
@@ -195,13 +214,15 @@ function App(){
   },[auth?.user.id,auth?.requiresPasswordChange,role])
   useEffect(()=>{
     if(!auth||auth.requiresPasswordChange)return
-    if(auth.role.menus.includes('user-management'))accessApi.get().then(access=>{setSystemUsers(access.users);setSystemRoles(access.roles);setAccessError('')}).catch(error=>setAccessError(error instanceof Error?error.message:'权限配置加载失败'))
-    else{setSystemUsers([auth.user]);setSystemRoles([auth.role]);setAccessError('')}
+    if(auth.role.menus.includes('user-management'))accessApi.get().then(access=>{setSystemUsers(access.users);setSystemRoles(access.roles);setOrganization(access.organization||emptyOrganization);setAccessError('')}).catch(error=>setAccessError(error instanceof Error?error.message:'权限配置加载失败'))
+    else{setSystemUsers([auth.user]);setSystemRoles([auth.role]);setOrganization(emptyOrganization);setAccessError('')}
   },[auth])
 
-  const runWorkflow=async(action:()=>Promise<WorkflowState>,success:string)=>{
+  const runWorkflow=async(action:()=>Promise<WorkflowMutationResult>,success:string)=>{
     setWorkflowBusy(true)
-    try{const next=await action();setWorkflow(next);setWorkflowError('');notify(success)}catch(e){notify(e instanceof Error?e.message:'操作失败')}finally{setWorkflowBusy(false)}
+    try{const next=await action();setWorkflow(current=>applyWorkflowMutation(current,next));setWorkflowError('');notify(success);return true}
+    catch(e){notify(e instanceof Error?e.message:'操作失败');return false}
+    finally{setWorkflowBusy(false)}
   }
   const publishTrainingReport=async()=>{
    setWorkflowBusy(true)
@@ -274,32 +295,20 @@ function App(){
   }
   const login=async(jobNo:string,password:string)=>{
    setAuthBusy(true);setAuthError('')
-   try{const session=await authApi.login(jobNo,password);setAuth(session);setRole(authRoleMap[session.role.id]||'employee');return true}
+   try{const session=await authApi.login(jobNo,password);rememberLastLoginJobNo(session.user.jobNo);setAuth(session);setRole(authRoleMap[session.role.id]||'employee');return true}
    catch(error){setAuthError(error instanceof Error?error.message:'登录失败');return false}
    finally{setAuthBusy(false);setAuthLoading(false)}
   }
-  const changeLoginPassword=async(currentPassword:string,newPassword:string)=>{
+  const changeLoginPassword=async(currentPassword:string,newPassword:string,successMessage='密码修改成功，已进入作战台')=>{
    setAuthBusy(true);setAuthError('')
-   try{const session=await authApi.changePassword(currentPassword,newPassword);setAuth(session);setRole(authRoleMap[session.role.id]||'employee');notify('密码修改成功，已进入作战台');return true}
+   try{const session=await authApi.changePassword(currentPassword,newPassword);rememberLastLoginJobNo(session.user.jobNo);setAuth(session);setRole(authRoleMap[session.role.id]||'employee');notify(successMessage);return true}
    catch(error){setAuthError(error instanceof Error?error.message:'密码修改失败');return false}
    finally{setAuthBusy(false)}
   }
   const logout=async()=>{
    setAuthBusy(true)
    try{await authApi.logout()}catch{}
-   setAuth(null);setRole('leader');setPage('command');setRoleOpen(false);setAssistantOpen(false);setAuthError('');setReadNotifications([]);setAssistantThreads(initialAssistantThreads());setAuthBusy(false)
-  }
-
-  const resetDemo=async()=>{
-    if(!window.confirm('确认恢复比赛演示初始状态？当前任务进度和本页临时操作将被清除。'))return
-    setWorkflowBusy(true)
-    try{
-      const next=await workflowApi.reset()
-      setWorkflow(next);setWorkflowError('');setRole('leader');setPage('command');setSelectedAlertId('')
-      setReadNotifications([]);setNotificationOpen(false);setRoleOpen(false);setAssistantOpen(false);setQuery('');setSearchOpen(false);setSearchQuery('')
-      setAssistantThreads(initialAssistantThreads());setAssistantError('');setAssistantBusy(false)
-      setDemoRevision(value=>value+1);notify('比赛演示数据已恢复初始状态')
-    }catch(error){notify(error instanceof Error?error.message:'复位失败')}finally{setWorkflowBusy(false)}
+   setAuth(null);setRole('leader');setPage('command');setRoleOpen(false);setPasswordDialogOpen(false);setAssistantOpen(false);setAuthError('');setReadNotifications([]);setAssistantThreads(initialAssistantThreads());setAuthBusy(false)
   }
 
   useEffect(()=>{
@@ -352,12 +361,12 @@ function App(){
       ...workflow.governance.shiftPlans.map(item=>`排班计划${item.id}：需求${item.required}人、已排${item.scheduled}人、目标覆盖率${item.targetCoverage}%，状态${item.status}`),
       ...workflow.governance.skillRoutes.map(item=>`技能路由${item.id}：接通率${item.baselineAnswerRate}%→目标${item.targetAnswerRate}%、实际${item.actualAnswerRate||'待回填'}%，状态${item.status}`),
     ]:role==='director'?[
-      ...workflow.governance.budgets.map(item=>`${item.project}经营预测：收入${item.forecastRevenue}/${item.revenueTarget}万元，毛利${item.forecastMargin}%/目标${item.targetMargin}%，状态${item.status}`),
-      `总监待决策与验收${workflow.governance.budgets.filter(item=>item.status==='director_pending').length+workflow.governance.contracts.filter(item=>item.status==='director_pending').length+workflow.governance.crossDepartmentItems.filter(item=>item.status==='director_verification').length}项`,
+      ...workflow.governance.budgets.map(item=>`${item.project}H1预算达成：收入实际${item.forecastRevenue}万元/预算${item.revenueTarget}万元，毛利率实际${item.forecastMargin}%/预算${item.targetMargin}%，状态${item.status}`),
+      `总监待决策与验收${workflow.governance.budgets.filter(item=>item.status==='director_pending').length+workflow.governance.crossDepartmentItems.filter(item=>item.status==='director_verification').length}项`,
     ]:role==='manager'?[
       `生产审批待办${workflow.governance.shiftPlans.filter(item=>item.status==='manager_pending').length+workflow.governance.skillRoutes.filter(item=>item.status==='manager_pending').length}项，跨部门协同待执行${workflow.governance.crossDepartmentItems.filter(item=>item.targetRole==='manager'&&!['closed','director_verification'].includes(item.status)).length}项`,
     ]:[]):[]
-    const openGovernance=workflow?(role==='director'?workflow.governance.budgets.filter(item=>item.status==='director_pending').length+workflow.governance.contracts.filter(item=>item.status==='director_pending').length+workflow.governance.crossDepartmentItems.filter(item=>item.status==='director_verification').length+workflow.governance.meetings.filter(item=>item.status==='draft').length:role==='manager'?workflow.governance.shiftPlans.filter(item=>item.status==='manager_pending').length+workflow.governance.skillRoutes.filter(item=>item.status==='manager_pending').length+workflow.governance.crossDepartmentItems.filter(item=>item.targetRole==='manager'&&!['closed','director_verification'].includes(item.status)).length:role==='supervisor'?workflow.governance.shiftPlans.filter(item=>['draft','returned'].includes(item.status)).length+workflow.governance.skillRoutes.filter(item=>['draft','returned','executing'].includes(item.status)).length:role==='hrbp'?workflow.governance.crossDepartmentItems.filter(item=>item.targetRole==='hrbp'&&!['closed','director_verification'].includes(item.status)).length:0):0
+    const openGovernance=workflow?(role==='director'?workflow.governance.budgets.filter(item=>item.status==='director_pending').length+workflow.governance.crossDepartmentItems.filter(item=>item.status==='director_verification').length+workflow.governance.meetings.filter(item=>item.status==='draft').length:role==='manager'?workflow.governance.shiftPlans.filter(item=>item.status==='manager_pending').length+workflow.governance.skillRoutes.filter(item=>item.status==='manager_pending').length+workflow.governance.crossDepartmentItems.filter(item=>item.targetRole==='manager'&&!['closed','director_verification'].includes(item.status)).length:role==='supervisor'?workflow.governance.shiftPlans.filter(item=>['draft','returned'].includes(item.status)).length+workflow.governance.skillRoutes.filter(item=>['draft','returned','executing'].includes(item.status)).length:role==='hrbp'?workflow.governance.crossDepartmentItems.filter(item=>item.targetRole==='hrbp'&&!['closed','director_verification'].includes(item.status)).length:0):0
     return {
       roleId:role,role:currentRole.label,scope:currentRole.scope,page:pageLabel||'今日作战',
       metrics:[...governanceMetrics,...learningMetrics,...workforceMetrics,...metrics.map(item=>`${item.label}：实际${item.value}，${item.target}，偏差${item.delta>0?'+':''}${item.delta}个百分点`)].slice(0,12),
@@ -404,12 +413,13 @@ function App(){
   if(authLoading)return <div className="auth-loading"><img src={companyLogo} alt="伽睿智科公司Logo"/><span className="assistant-spinner"></span><p>正在验证安全会话…</p></div>
   if(!auth)return <LoginPage login={login} busy={authBusy} error={authError}/>
   if(auth.requiresPasswordChange)return <PasswordChangePage user={auth.user} changePassword={changeLoginPassword} logout={logout} busy={authBusy} error={authError}/>
+  const sessionExpiresText=new Date(auth.expiresAt).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false})
 
   return <div className="app-shell">
     <aside className="sidebar">
       <div className="brand"><img className="brand-logo" src={companyLogo} alt="伽睿智科公司Logo"/><div><strong>伽睿智科</strong><small>河北基地运营中枢</small></div></div>
       <div className="mode-sign"><div className="live-dot"></div><span>{roleModeLabel[role]}</span></div>
-      <nav>{visibleNav.map(item=>{const Icon=item.icon;const hrbpPeopleTasks=role==='hrbp'?hrbpCases.filter(caseItem=>caseItem.status!=='closed'||(caseItem.managerNote&&!caseItem.filedAt)).length:role==='manager'?hrbpCases.filter(caseItem=>caseItem.status==='manager_pending'||caseItem.status==='manager_contacting').length:0;const managerPeopleTasks=role==='manager'&&workflow?workflow.people.staffingPlans.filter(plan=>plan.status==='manager_pending').length+workflow.people.lifecycle.filter(record=>record.status==='manager_pending').length+workflow.people.laborCases.filter(record=>['manager_pending','manager_doing'].includes(record.status)).length:0;const learningTasks=workflow?role==='training'?workflow.learning.assignments.filter(record=>record.status==='failed').length+workflow.learning.suggestions.filter(record=>['pending_training','reviewing','accepted'].includes(record.status)).length+workflow.learning.growthReviews.filter(record=>['planned','training_review'].includes(record.status)).length:role==='leader'?workflow.learning.assignments.filter(record=>record.status==='leader_verification').length+workflow.learning.growthReviews.filter(record=>record.status==='leader_pending').length:role==='employee'?workflow.learning.assignments.filter(record=>record.employeeId==='JR10776'&&record.status!=='closed').length:0:0;const governanceTasks=workflow?role==='director'?workflow.governance.budgets.filter(record=>record.status==='director_pending').length+workflow.governance.contracts.filter(record=>record.status==='director_pending').length+workflow.governance.crossDepartmentItems.filter(record=>record.status==='director_verification').length+workflow.governance.meetings.filter(record=>record.status==='draft').length:role==='manager'?workflow.governance.shiftPlans.filter(record=>record.status==='manager_pending').length+workflow.governance.skillRoutes.filter(record=>record.status==='manager_pending').length+workflow.governance.crossDepartmentItems.filter(record=>record.targetRole==='manager'&&!['closed','director_verification'].includes(record.status)).length:role==='supervisor'?workflow.governance.shiftPlans.filter(record=>['draft','returned'].includes(record.status)).length+workflow.governance.skillRoutes.filter(record=>['draft','returned','executing'].includes(record.status)).length:role==='hrbp'?workflow.governance.crossDepartmentItems.filter(record=>record.targetRole==='hrbp'&&!['closed','director_verification'].includes(record.status)).length:0:0;const workforceTasks=workflow?.workforce?.requests.filter(request=>request.ownerRole===role&&!['closed','rejected'].includes(request.status)).length||0;const badge=item.id==='alerts'?pendingWorkflowEventCount(workflow):item.id==='tasks'?openWorkflowTaskCount(workflow,role)+hrbpPeopleTasks+managerPeopleTasks+learningTasks+governanceTasks:item.id==='workforce'?workforceTasks:0;return <button key={item.id} className={page===item.id?'active':''} onClick={()=>setPage(item.id)}><Icon size={18}/><span>{item.label}</span>{badge>0&&<em>{badge>99?'99+':badge}</em>}</button>})}</nav>
+      <nav>{visibleNav.map(item=>{const Icon=item.icon;const hrbpPeopleTasks=role==='hrbp'?hrbpCases.filter(caseItem=>caseItem.status!=='closed'||(caseItem.managerNote&&!caseItem.filedAt)).length:role==='manager'?hrbpCases.filter(caseItem=>caseItem.status==='manager_pending'||caseItem.status==='manager_contacting').length:0;const managerPeopleTasks=role==='manager'&&workflow?workflow.people.staffingPlans.filter(plan=>plan.status==='manager_pending').length+workflow.people.lifecycle.filter(record=>record.status==='manager_pending').length+workflow.people.laborCases.filter(record=>['manager_pending','manager_doing'].includes(record.status)).length:0;const learningTasks=workflow?role==='training'?workflow.learning.assignments.filter(record=>record.status==='failed').length+workflow.learning.suggestions.filter(record=>['pending_training','reviewing','accepted'].includes(record.status)).length+workflow.learning.growthReviews.filter(record=>['planned','training_review'].includes(record.status)).length:role==='leader'?workflow.learning.assignments.filter(record=>record.status==='leader_verification').length+workflow.learning.growthReviews.filter(record=>record.status==='leader_pending').length:role==='employee'?workflow.learning.assignments.filter(record=>record.employeeId==='JR10776'&&record.status!=='closed').length:0:0;const governanceTasks=workflow?role==='director'?workflow.governance.budgets.filter(record=>record.status==='director_pending').length+workflow.governance.crossDepartmentItems.filter(record=>record.status==='director_verification').length+workflow.governance.meetings.filter(record=>record.status==='draft').length:role==='manager'?workflow.governance.shiftPlans.filter(record=>record.status==='manager_pending').length+workflow.governance.skillRoutes.filter(record=>record.status==='manager_pending').length+workflow.governance.crossDepartmentItems.filter(record=>record.targetRole==='manager'&&!['closed','director_verification'].includes(record.status)).length:role==='supervisor'?workflow.governance.shiftPlans.filter(record=>['draft','returned'].includes(record.status)).length+workflow.governance.skillRoutes.filter(record=>['draft','returned','executing'].includes(record.status)).length:role==='hrbp'?workflow.governance.crossDepartmentItems.filter(record=>record.targetRole==='hrbp'&&!['closed','director_verification'].includes(record.status)).length:0:0;const workforceTasks=workflow?.workforce?.requests.filter(request=>request.ownerRole===role&&!['closed','rejected'].includes(request.status)).length||0;const badge=item.id==='alerts'?pendingWorkflowEventCount(workflow):item.id==='tasks'?openWorkflowTaskCount(workflow,role)+hrbpPeopleTasks+managerPeopleTasks+learningTasks+governanceTasks:item.id==='workforce'?workforceTasks:0;return <button key={item.id} className={page===item.id?'active':''} onClick={()=>setPage(item.id)}><Icon size={18}/><span>{item.label}</span>{badge>0&&<em>{badge>99?'99+':badge}</em>}</button>})}</nav>
       {canManageSystem&&<div className="system-nav"><button className={`system-nav-head ${['user-management','role-management','ai-settings'].includes(page)?'active':''}`} onClick={()=>setSystemOpen(!systemOpen)}><Settings size={18}/><span>系统管理</span><ChevronDown size={15} className={systemOpen?'open':''}/></button>{systemOpen&&<div className="system-subnav">{allowedMenus.includes('user-management')&&<button className={page==='user-management'?'active':''} onClick={()=>setPage('user-management')}><Users size={15}/><span>用户管理</span></button>}{allowedMenus.includes('role-management')&&<button className={page==='role-management'?'active':''} onClick={()=>setPage('role-management')}><ShieldCheck size={15}/><span>角色管理</span></button>}{allowedMenus.includes('ai-settings')&&<button className={page==='ai-settings'?'active':''} onClick={()=>setPage('ai-settings')}><Bot size={15}/><span>AI模型配置</span></button>}</div>}</div>}
       <div className="sidebar-foot"><p>数据状态</p><div><Database size={15}/><span>{realData?'真实库适配层':'数据适配层'}</span><b>{realData?'已连接':'待连接'}</b></div><small>{realData?`${realData.meta.sourceSchema} · ${realData.meta.scopeLabel}`:realDataError||'正在连接真实库'}<br/>{realData?.meta.dates.productivity?`产能截至 ${realData.meta.dates.productivity}`:'等待数据时间'}</small></div>
     </aside>
@@ -419,20 +429,18 @@ function App(){
         <div className="crumb"><span>河北基地</span><ChevronRight size={14}/><strong>{pageLabel}</strong></div>
         <div className="top-actions">
           <button className="search-btn" onClick={()=>setSearchOpen(true)}><Search size={17}/><span>搜索员工 / 工单 / 指标</span><kbd>⌘ K</kbd></button>
-          {isSystemAdmin&&<button className="icon-btn reset-demo-btn" disabled={workflowBusy} title="复位业务演示数据" onClick={resetDemo}><RefreshCw size={18}/></button>}
           <button className={`icon-btn ${notificationOpen?'active':''}`} onClick={()=>setNotificationOpen(!notificationOpen)}><Bell size={18}/>{unreadCount>0&&<b>{unreadCount>9?'9+':unreadCount}</b>}</button>
-          <button className="icon-btn" disabled={authBusy} title="退出登录" onClick={logout}><LockKeyhole size={18}/></button>
           <div className="role-switcher">
-            <button onClick={()=>isSystemAdmin&&setRoleOpen(!roleOpen)}><span className="avatar">{currentUser?.name.slice(0,1)||currentRole.initials}</span><div><strong>{currentUser?.name||currentRole.label}</strong><small>{currentUser?`${currentUser.jobTitle} · ${runtimeRole?.name||'未分配角色'}`:`${currentRole.scope}${isSystemAdmin?' · 管理员模拟':''}`}</small></div>{isSystemAdmin&&<ChevronDown size={16}/>}</button>
-            {roleOpen&&isSystemAdmin&&<div className="role-menu">{roles.map(r=><button key={r.id} onClick={()=>{setRole(r.id);setPage('command');setRoleOpen(false);notify(`已进入${r.label}工作台`)}} className={r.id===role?'selected':''}><span>{r.initials}</span><div><strong>{r.label}</strong><small>{r.scope}</small></div>{r.id===role&&<CheckCircle2 size={16}/>}</button>)}</div>}
+            <button className="account-trigger" aria-label="账号与登录状态" aria-expanded={roleOpen} onClick={()=>setRoleOpen(!roleOpen)}><span className="avatar">{auth.user.name.slice(0,1)}</span><div><strong>{auth.user.name}</strong><small><i className="account-online-dot"></i>已登录 · {auth.user.jobNo}{isSystemAdmin&&role!=='director'?` · ${currentRole.label}视图`:''}</small></div><ChevronDown size={16} className={roleOpen?'open':''}/></button>
+            {roleOpen&&<><button className="account-menu-shade" aria-label="关闭账号菜单" onClick={()=>setRoleOpen(false)}></button><section className="account-menu" aria-label="账号管理菜单"><header><span className="account-menu-avatar">{auth.user.name.slice(0,1)}</span><div><b>当前登录账号</b><strong>{auth.user.name}</strong><small>{auth.user.jobTitle} · {auth.role.name}</small></div><em><i></i>正常</em></header><div className="account-session-grid"><span>登录工号<strong>{auth.user.jobNo}</strong></span><span>所属组织<strong>{auth.user.department||'河北基地'}</strong></span><span>当前工作台<strong>{currentRole.label}</strong></span><span>会话有效至<strong>{sessionExpiresText}</strong></span></div><div className="account-menu-actions"><button onClick={()=>{setRoleOpen(false);setAuthError('');setPasswordDialogOpen(true)}}><KeyRound size={16}/><span><strong>修改登录密码</strong><small>验证当前密码后更新</small></span><ChevronRight size={15}/></button>{allowedMenus.includes('user-management')&&<button onClick={()=>{setPage('user-management');setRoleOpen(false)}}><UserCog size={16}/><span><strong>账号管理</strong><small>用户、角色与登录权限</small></span><ChevronRight size={15}/></button>}<button className="logout" disabled={authBusy} onClick={logout}><LockKeyhole size={16}/><span><strong>退出当前账号</strong><small>返回安全登录页面</small></span><ChevronRight size={15}/></button></div>{isSystemAdmin&&<div className="account-role-section"><header><span>管理员工作台切换</span><small>当前：{currentRole.label}</small></header><div>{roles.map(r=><button key={r.id} onClick={()=>{setRole(r.id);setPage('command');setRoleOpen(false);notify(`已进入${r.label}工作台`)}} className={r.id===role?'selected':''}><span>{r.initials}</span><div><strong>{r.label}</strong><small>{r.scope}</small></div>{r.id===role&&<CheckCircle2 size={16}/>}</button>)}</div></div>}</section></>}
           </div>
         </div>
       </header>
 
-      <div className="workspace" key={demoRevision}>
+      <div className="workspace">
         {page==='command'&&(
           role==='director'?<DirectorPage notify={notify} workflow={workflow} busy={workflowBusy} run={runWorkflow}/>:
-          role==='manager'?<ManagerPage notify={notify} trainingReport={trainingReport} readTrainingReport={reviewTrainingReport} hrbpCases={hrbpCases} setPage={setPage}/>:
+          role==='manager'?<ManagerPage notify={notify} trainingReport={trainingReport} readTrainingReport={reviewTrainingReport} hrbpCases={hrbpCases} setPage={setPage} workflow={workflow}/>:
           role==='supervisor'?<SupervisorPage alerts={alerts} notify={notify} handleAlert={handleAlert} workflow={workflow} busy={workflowBusy} run={runWorkflow}/>:
           role==='employee'?<EmployeePage notify={notify} workflow={workflow} setWorkflow={setWorkflow} setPage={setPage} realData={realData}/>:
           role==='quality'?<QualityPage notify={notify} workflow={workflow} setWorkflow={setWorkflow} setPage={setPage}/>:
@@ -443,15 +451,16 @@ function App(){
         {page==='alerts'&&<WorkflowCenter role={role} state={workflow} error={workflowError} busy={workflowBusy} selectedId={selectedAlertId} setSelectedId={setSelectedAlertId} run={runWorkflow}/>}
         {page==='industry-news'&&<IndustryNewsPage notify={notify}/>}
         {page==='settlement'&&<SettlementPage notify={notify}/>}
-        {page==='meeting'&&<MeetingPage notify={notify} workflow={workflow} realData={realData}/>}
-        {page==='team'&&<TeamPage notify={notify} realData={realData}/>}
+        {page==='meeting'&&workflow&&(role==='leader'?<MeetingPage notify={notify} workflow={workflow} realData={realData} setWorkflow={setWorkflow}/>:<MorningBriefingHub role={role} state={workflow} setState={setWorkflow} notify={notify}/>)}
+        {page==='team'&&<TeamPage role={role} notify={notify} realData={realData} busy={workflowBusy} run={runWorkflow}/>}
         {page==='workforce'&&<WorkforcePage role={role} state={workflow} error={workflowError} busy={workflowBusy} run={runWorkflow} realData={realData}/>}
-        {page==='tasks'&&(role==='hrbp'?<HrbpPdcaHub state={workflow} error={workflowError} busy={workflowBusy} run={runWorkflow} cases={hrbpCases} act={runHrbpCaseAction} notify={notify}/>:role==='manager'?<ManagerPdcaHub state={workflow} error={workflowError} busy={workflowBusy} run={runWorkflow} cases={hrbpCases} act={runHrbpCaseAction} notify={notify}/>:role==='leader'?<LeaderPdcaHub state={workflow} setState={setWorkflow} error={workflowError} busy={workflowBusy} run={runWorkflow} notify={notify}/>:<WorkflowTasksPage role={role} state={workflow} error={workflowError} busy={workflowBusy} run={runWorkflow} notify={notify}/>)}
-        {page==='reports'&&<ReportsPage role={role} actor={currentUser?.name||currentRole.label} notify={notify} workflowTasks={workflow?.tasks||[]} workflowBusy={workflowBusy} createPdcaTask={employee=>runWorkflow(()=>workflowApi.createReportTask({role,actor:currentUser?.name||currentRole.label,reportDate:'2026-07-19',employee}),`${employee.name}的任务单已创建，可在PDCA任务中继续处理`)}/>}
+        {page==='tasks'&&(role==='hrbp'?<HrbpPdcaHub state={workflow} error={workflowError} busy={workflowBusy} run={runWorkflow} cases={hrbpCases} act={runHrbpCaseAction} notify={notify}/>:role==='manager'?<ManagerPdcaHub state={workflow} error={workflowError} busy={workflowBusy} run={runWorkflow} cases={hrbpCases} act={runHrbpCaseAction} notify={notify}/>:role==='leader'?<LeaderPdcaHub state={workflow} setState={setWorkflow} error={workflowError} busy={workflowBusy} run={runWorkflow} notify={notify}/>:<WorkflowTasksPage key={role} role={role} state={workflow} error={workflowError} busy={workflowBusy} run={runWorkflow} notify={notify}/>)}
+        {page==='excellence'&&<ExcellenceHub role={role} state={workflow} busy={workflowBusy} run={runWorkflow} notify={notify}/>}
+        {page==='reports'&&<ReportsPage role={role} actor={currentUser?.name||currentRole.label} notify={notify} workflowTasks={workflow?.tasks||[]} workflowBusy={workflowBusy} createPdcaTask={async employee=>{await runWorkflow(()=>workflowApi.createReportTask({role,actor:currentUser?.name||currentRole.label,reportDate:'2026-07-19',employee}),`${employee.name}的任务单已创建，可在PDCA任务中继续处理`)}}/>}
         {page==='growth'&&<DevelopmentWorkHub role={role} state={workflow} setState={setWorkflow} notify={notify} employeeId="JR10776"/>}
         {page==='salary'&&<SalaryPerformanceHub role={role} notify={notify} realData={realData}/>}
-        {page==='user-management'&&<UserManagementPage users={systemUsers} saveUser={saveSystemUser} userAction={runSystemUserAction} roles={systemRoles} notify={notify} busy={accessBusy} error={accessError}/>}
-        {page==='role-management'&&<RoleManagementPage roles={systemRoles} saveRole={saveSystemRole} deleteRole={deleteSystemRole} users={systemUsers} notify={notify} busy={accessBusy} error={accessError}/>}
+        {page==='user-management'&&<UserManagementPage users={systemUsers} saveUser={saveSystemUser} userAction={runSystemUserAction} roles={systemRoles} organization={organization} notify={notify} busy={accessBusy} error={accessError}/>}
+        {page==='role-management'&&<RoleManagementPage roles={systemRoles} saveRole={saveSystemRole} deleteRole={deleteSystemRole} users={systemUsers} organization={organization} notify={notify} busy={accessBusy} error={accessError}/>}
         {page==='ai-settings'&&<AiSettingsPage actor={currentUser?.name||currentRole.label} notify={notify}/>}
       </div>
     </main>
@@ -474,15 +483,34 @@ function App(){
       <div className="assistant-input"><textarea rows={1} value={query} disabled={assistantBusy||assistantActionBusy} onChange={event=>setQuery(event.target.value)} onKeyDown={event=>{if(event.key==='Enter'&&!event.shiftKey&&!event.nativeEvent.isComposing){event.preventDefault();runAssistant()}}} placeholder={assistantConfigured===false?'配置 DEEPSEEK_API_KEY 后即可对话':'输入问题，Enter 发送，Shift+Enter 换行'}/><button aria-label="发送消息" disabled={!query.trim()||assistantBusy||assistantActionBusy} onClick={()=>runAssistant()}>{assistantBusy?<span className="assistant-spinner"></span>:<Send size={17}/>}</button></div>
       <footer><span>AI草案须由本人确认后才会执行</span><b>由 DeepSeek 提供模型能力</b></footer>
     </section>}
+    {passwordDialogOpen&&<AccountPasswordDialog
+      user={auth.user}
+      busy={authBusy}
+      error={authError}
+      close={()=>{setPasswordDialogOpen(false);setAuthError('')}}
+      changePassword={(currentPassword,newPassword)=>changeLoginPassword(currentPassword,newPassword,'密码修改成功，当前登录会话已刷新')}
+    />}
     {toast&&<div className="toast"><CheckCircle2 size={18}/>{toast}</div>}
   </div>
 }
 
+function AccountPasswordDialog({user,busy,error,close,changePassword}:{user:SystemUser;busy:boolean;error:string;close:()=>void;changePassword:(currentPassword:string,newPassword:string)=>Promise<boolean>}){
+ const [currentPassword,setCurrentPassword]=useState('')
+ const [newPassword,setNewPassword]=useState('')
+ const [confirmPassword,setConfirmPassword]=useState('')
+ const localError=confirmPassword&&newPassword!==confirmPassword?'两次输入的新密码不一致':newPassword&&newPassword.length<8?'新密码至少需要8位':''
+ const submit=async(event:FormEvent)=>{event.preventDefault();if(!localError&&currentPassword&&newPassword&&confirmPassword&&await changePassword(currentPassword,newPassword))close()}
+ return <div className="modal-backdrop account-password-backdrop" onMouseDown={close}><form className="account-password-modal" onSubmit={submit} onMouseDown={event=>event.stopPropagation()}><header><div><span>账号安全</span><h2>修改登录密码</h2><p>{user.name} · {user.jobNo}</p></div><button type="button" aria-label="关闭修改密码" disabled={busy} onClick={close}><X size={19}/></button></header><div className="account-password-body">{(error||localError)&&<div className="auth-error"><AlertTriangle size={16}/>{localError||error}</div>}<label><span>当前密码</span><div><LockKeyhole size={16}/><input autoFocus type="password" autoComplete="current-password" value={currentPassword} onChange={event=>setCurrentPassword(event.target.value)} placeholder="请输入当前登录密码"/></div></label><label><span>新密码</span><div><KeyRound size={16}/><input type="password" autoComplete="new-password" value={newPassword} onChange={event=>setNewPassword(event.target.value)} placeholder="至少8位，且不能与当前密码相同"/></div></label><label><span>确认新密码</span><div><ShieldCheck size={16}/><input type="password" autoComplete="new-password" value={confirmPassword} onChange={event=>setConfirmPassword(event.target.value)} placeholder="再次输入新密码"/></div></label><aside><ShieldCheck size={15}/><span>密码仅提交至业务服务并使用随机盐加密保存，页面不会记录明文密码。</span></aside></div><footer><button type="button" className="secondary" disabled={busy} onClick={close}>取消</button><button className="primary" disabled={busy||!!localError||!currentPassword||!newPassword||!confirmPassword}>{busy?<span className="assistant-spinner"></span>:<KeyRound size={15}/>}确认修改</button></footer></form></div>
+}
+
 function LoginPage({login,busy,error}:{login:(jobNo:string,password:string)=>Promise<boolean>;busy:boolean;error:string}){
- const [jobNo,setJobNo]=useState('')
+ const [rememberedJobNo]=useState(readLastLoginJobNo)
+ const [usingRemembered,setUsingRemembered]=useState(Boolean(rememberedJobNo))
+ const [jobNo,setJobNo]=useState(rememberedJobNo)
  const [password,setPassword]=useState('')
  const submit=async(event:FormEvent)=>{event.preventDefault();if(jobNo.trim()&&password)await login(jobNo,password)}
- return <main className="auth-page"><section className="auth-brand-panel"><div className="auth-brand"><img src={companyLogo} alt="伽睿智科公司Logo"/><div><strong>伽睿智科</strong><span>河北基地运营中枢</span></div></div><div className="auth-value"><span>全岗位协同 · 目标驱动 · PDCA闭环</span><h1>把每天应该做的事，落实到岗位、目标和责任人</h1><p>运营、客服、质检、培训与HRBP使用同一业务状态协同，关键动作全程留痕。</p></div><div className="auth-security"><ShieldCheck size={21}/><div><strong>安全会话保护</strong><p>账号密码仅发送至业务服务，登录态使用HttpOnly Cookie保存。</p></div></div></section><section className="auth-form-panel"><form onSubmit={submit}><header><span>安全登录</span><h2>进入河北基地作战台</h2><p>请使用工号和个人密码登录</p></header>{error&&<div className="auth-error"><AlertTriangle size={16}/>{error}</div>}<label><span>工号</span><div><UserCog size={17}/><input autoFocus autoComplete="username" value={jobNo} onChange={event=>setJobNo(event.target.value)} placeholder="请输入工号"/></div></label><label><span>密码</span><div><LockKeyhole size={17}/><input type="password" autoComplete="current-password" value={password} onChange={event=>setPassword(event.target.value)} placeholder="请输入密码"/></div></label><button className="auth-submit" disabled={busy||!jobNo.trim()||!password}>{busy?<span className="assistant-spinner"></span>:<ShieldCheck size={17}/>}登录作战台</button><footer><small>账号由系统管理员统一开通</small><small>一次性初始密码通过安全渠道交付，首次登录必须修改。</small></footer></form></section></main>
+ const switchAccount=()=>{setUsingRemembered(false);setJobNo('');setPassword('')}
+ return <main className="auth-page"><section className="auth-brand-panel"><div className="auth-brand"><img src={companyLogo} alt="伽睿智科公司Logo"/><div><strong>伽睿智科</strong><span>河北基地运营中枢</span></div></div><div className="auth-value"><span>全岗位协同 · 目标驱动 · PDCA闭环</span><h1>把每天应该做的事，落实到岗位、目标和责任人</h1><p>运营、客服、质检、培训与HRBP使用同一业务状态协同，关键动作全程留痕。</p></div><div className="auth-security"><ShieldCheck size={21}/><div><strong>安全会话保护</strong><p>账号密码仅发送至业务服务，登录态使用HttpOnly Cookie保存。</p></div></div></section><section className="auth-form-panel"><form onSubmit={submit}><header><span>安全登录</span><h2>进入河北基地作战台</h2><p>{usingRemembered?'已保留上次登录账号，请输入密码':'请使用工号和个人密码登录'}</p></header>{error&&<div className="auth-error"><AlertTriangle size={16}/>{error}</div>}<label><span className="auth-field-heading"><b>工号</b>{usingRemembered&&<button type="button" onClick={switchAccount}>切换账号</button>}</span><div className={usingRemembered?'remembered-account':''}><UserCog size={17}/><input autoFocus={!usingRemembered} readOnly={usingRemembered} autoComplete="username" aria-label="工号" value={jobNo} onChange={event=>setJobNo(event.target.value)} placeholder="请输入工号"/>{usingRemembered&&<em>上次登录</em>}</div></label><label><span>密码</span><div><LockKeyhole size={17}/><input autoFocus={usingRemembered} type="password" autoComplete="current-password" aria-label="密码" value={password} onChange={event=>setPassword(event.target.value)} placeholder="请输入密码"/></div></label><button className="auth-submit" disabled={busy||!jobNo.trim()||!password}>{busy?<span className="assistant-spinner"></span>:<ShieldCheck size={17}/>}登录作战台</button><footer>{usingRemembered&&<small className="auth-remember-note"><ShieldCheck size={12}/>仅在本机保留账号，密码不会保存。</small>}<small>账号由系统管理员统一开通</small><small>一次性初始密码通过安全渠道交付，首次登录必须修改。</small></footer></form></section></main>
 }
 
 function PasswordChangePage({user,changePassword,logout,busy,error}:{user:SystemUser;changePassword:(currentPassword:string,newPassword:string)=>Promise<boolean>;logout:()=>void;busy:boolean;error:string}){
@@ -523,7 +551,7 @@ function NotificationCenter({role,items,readIds,markRead,markAll,close,go}:{role
 
 function PageHead({eyebrow,title,desc,actions}:{eyebrow:string,title:string,desc:string,actions?:React.ReactNode}){return <div className="page-head"><div><span>{eyebrow}</span><h1>{title}</h1><p>{desc}</p></div>{actions&&<div className="page-actions">{actions}</div>}</div>}
 
-function DirectorPage({notify,workflow,busy,run}:{notify:(s:string)=>void;workflow:WorkflowState|null;busy:boolean;run:(action:()=>Promise<WorkflowState>,success:string)=>void}){
+function DirectorPage({notify,workflow,busy,run}:{notify:(s:string)=>void;workflow:WorkflowState|null;busy:boolean;run:WorkflowRunner}){
   const [newsFilter,setNewsFilter]=useState('全部')
   const [settlementTab,setSettlementTab]=useState('总览')
   const news=industryNews
@@ -531,12 +559,11 @@ function DirectorPage({notify,workflow,busy,run}:{notify:(s:string)=>void;workfl
   const settlementRows=settlements
   const shownSettlements=settlementTab==='总览'?settlementRows:settlementTab==='逾期风险'?settlementRows.filter(item=>item.riskLevel==='high'):settlementRows.filter(item=>item.stage!=='待开票'||item.riskLevel!=='low')
   return <><PageHead eyebrow="运营总监 · 河北基地全域" title="先看客户，再看经营，最后盯回款" desc="把甲方变化、经营结果与现金回收放在同一张总监工作台上。" actions={<button className="primary" onClick={()=>notify('总监经营简报已生成')}><FileBarChart size={16}/>生成经营简报</button>}/>
+    {workflow&&workflow.financialPerformance?.metrics?.length>0&&<BudgetAchievementPanel state={workflow.financialPerformance} role="director"/>}
     {workflow&&<DirectorGovernanceHub state={workflow} busy={busy} run={run}/>}
-    <section className="director-thesis"><div><span>今日经营结论</span><h2>运营基本盘稳定，但客户舆情与结费差异需要总监介入</h2><p>10015满意率距目标差0.4个百分点；套餐续约舆情升温；6月应结费527.0万元，已确认505.9万元，仍有21.1万元差异待闭环。</p></div><div className="director-score"><strong>81</strong><span>基地经营健康度</span><small>较昨日 +2</small></div></section>
-    <div className="exec-metrics">{[['甲方考核预测','96.2分','目标 97分','risk'],['全基地在岗','486人','编制 502人','good'],['本月应结费','¥527.0万','3个结费单','good'],['实际确认结费','¥505.9万','差异 ¥21.1万','risk'],['回款完成率','82.6%','目标 90%','bad']].map(x=><div className={`exec-card ${x[3]}`} key={x[0]}><span>{x[0]}</span><strong>{x[1]}</strong><p>{x[2]}</p></div>)}</div>
     <div className="director-grid">
       <section className="panel industry-panel"><div className="panel-head"><div><span>客户行业动态 · 定时采集</span><h2>哪些外部变化会影响河北基地</h2></div><div className="collector-status"><i></i><span>下次采集 12:00</span><button onClick={()=>notify('行业动态采集任务已触发；MVP当前展示模拟结果')}><RefreshCw size={14}/>立即采集</button></div></div><div className="news-filters">{['全部','工信部','中国联通','10015舆情','行业竞品'].map(f=><button className={newsFilter===f?'active':''} key={f} onClick={()=>setNewsFilter(f)}>{f}</button>)}</div><div className="news-list">{shown.map((n,i)=><article key={n.title}><div className={`news-icon n${i}`}><Newspaper size={18}/></div><div><header><span>{n.source}</span><em>{n.time}</em><b>{n.impact}</b></header><h3>{n.title}</h3><p>{n.summary}</p></div><button onClick={()=>notify(`已将“${n.title}”加入总监关注`)}><ArrowUpRight size={16}/></button></article>)}</div><footer className="source-note"><RadioTower size={15}/><span>计划数据源：工信部官网、中国联通官网及新闻、公开舆情信息源、通信行业媒体。后端采集服务待接入。</span></footer></section>
-      <section className="panel settlement-panel"><div className="panel-head"><div><span>合同驱动 · 结费管理</span><h2>从计划到回款，全流程不掉单</h2></div><button onClick={()=>notify('新建结费申请功能待后端持久化')}><ReceiptText size={15}/>新建结费申请</button></div><div className="settlement-steps">{[['合同','3'],['计划','3'],['核算','2'],['审核','1'],['开票','1'],['回款','2']].map((x,i)=><div className={i<3?'done':i===3?'active':''} key={x[0]}><span>{i<3?<CheckCircle2 size={14}/>:i+1}</span><b>{x[0]}</b><small>{x[1]}项</small></div>)}</div><div className="settlement-tabs">{['总览','待处理','逾期风险'].map(t=><button className={settlementTab===t?'active':''} onClick={()=>setSettlementTab(t)} key={t}>{t}</button>)}</div><div className="settlement-list">{shownSettlements.length?shownSettlements.map(s=>{const progress=Math.round(s.actual/s.plan*100);return <article key={s.id}><header><div><strong>{s.name}</strong><small>{s.owner} · 截止 {s.due}</small></div><span className={s.riskLevel==='high'?'risk':''}>{s.statusLabel}</span></header><div className="settlement-values"><span>应结 <b>¥{s.plan.toFixed(1)}万</b></span><span>已确认 <b>¥{s.actual.toFixed(1)}万</b></span><em>{progress}%</em></div><div className="settlement-progress"><i style={{width:`${progress}%`}}></i></div></article>}):<div className="filter-empty">当前分类暂无结算项目</div>}</div><div className="settlement-alert"><AlertTriangle size={17}/><div><strong>本月有 1 个高风险节点</strong><p>10015结费差异17.6万元，原因集中在人员费用核减和考核扣款复核。</p></div><button onClick={()=>notify('已生成结费差异督办任务')}>发起督办</button></div></section>
+      <section className="panel settlement-panel"><div className="panel-head"><div><span>合同驱动 · 结费管理（流程台账，不作为预算达成口径）</span><h2>从计划到回款，全流程不掉单</h2></div><button onClick={()=>notify('新建结费申请功能待后端持久化')}><ReceiptText size={15}/>新建结费申请</button></div><div className="settlement-steps">{[['合同','3'],['计划','3'],['核算','2'],['审核','1'],['开票','1'],['回款','2']].map((x,i)=><div className={i<3?'done':i===3?'active':''} key={x[0]}><span>{i<3?<CheckCircle2 size={14}/>:i+1}</span><b>{x[0]}</b><small>{x[1]}项</small></div>)}</div><div className="settlement-tabs">{['总览','待处理','逾期风险'].map(t=><button className={settlementTab===t?'active':''} onClick={()=>setSettlementTab(t)} key={t}>{t}</button>)}</div><div className="settlement-list">{shownSettlements.length?shownSettlements.map(s=>{const progress=Math.round(s.actual/s.plan*100);return <article key={s.id}><header><div><strong>{s.name}</strong><small>{s.owner} · 截止 {s.due}</small></div><span className={s.riskLevel==='high'?'risk':''}>{s.statusLabel}</span></header><div className="settlement-values"><span>应结 <b>¥{s.plan.toFixed(1)}万</b></span><span>已确认 <b>¥{s.actual.toFixed(1)}万</b></span><em>{progress}%</em></div><div className="settlement-progress"><i style={{width:`${progress}%`}}></i></div></article>}):<div className="filter-empty">当前分类暂无结算项目</div>}</div><div className="settlement-alert"><AlertTriangle size={17}/><div><strong>本月有 1 个高风险节点</strong><p>10015结费差异17.6万元，原因集中在人员费用核减和考核扣款复核。</p></div><button onClick={()=>notify('已生成结费差异督办任务')}>发起督办</button></div></section>
     </div>
     <section className="panel executive-bottom"><div className="panel-head"><div><span>组织与业务</span><h2>总监需要介入的3个管理断点</h2></div></div>{[['10015前台','满意率与重复来电率双偏差','客服经理牵头，今日提交专项改善计划','红'],['普通客服一区','2个班组班长闭环完成率不足70%','主管本周完成班长辅导','黄'],['HAC支持部','预计下月净缺口16人','HRBP 7月25日前给出招聘补充方案','黄']].map(x=><div className="exec-issue" key={x[0]}><span className={x[3]==='红'?'critical':'warning'}></span><strong>{x[0]}</strong><p>{x[1]}</p><em>{x[2]}</em><button onClick={()=>notify(`已打开${x[0]}管理详情`)}>下钻</button></div>)}</section>
   </>
@@ -555,11 +582,12 @@ function SettlementPage({notify}:{notify:(s:string)=>void}){
  return <><PageHead eyebrow="授权模块 · 合同驱动" title="结算管理" desc="从合同生成结算计划，贯通核算、审核、开票和回款，确保应结尽结、到期必跟。" actions={<button className="primary" onClick={()=>notify('新建结费申请功能待后端持久化')}><Plus size={16}/>新建结费申请</button>}/><div className="settlement-kpis">{[['本月应结费','¥527.0万','3个项目'],['已确认结费','¥505.9万','确认率96.0%'],['已开票','¥435.2万','开票率82.6%'],['已回款','¥398.6万','回款率75.6%'],['逾期风险','¥21.1万','1个高风险']].map((x,i)=><div className={i===4?'risk':''} key={x[0]}><span>{x[0]}</span><strong>{x[1]}</strong><p>{x[2]}</p></div>)}</div><section className="panel settlement-flow"><div className="panel-head"><div><span>全流程状态</span><h2>合同 → 计划 → 核算 → 审核 → 开票 → 回款</h2></div></div><div className="flow-stages">{[['合同生效','3','100%'],['计划生成','3','100%'],['费用核算','3','100%'],['甲方审核','2','67%'],['开票','1','33%'],['回款','1','25%']].map((x,i)=><div key={x[0]}><span className={i<3?'done':i===3?'active':''}>{i<3?<CheckCircle2 size={15}/>:i+1}</span><b>{x[0]}</b><strong>{x[1]}项</strong><em>{x[2]}</em></div>)}</div></section><section className="panel settlement-table"><div className="admin-toolbar"><div className="settlement-tabs">{['全部','待核算','审核中','待开票','待回款','逾期风险'].map(t=><button className={tab===t?'active':''} onClick={()=>setTab(t)} key={t}>{t}</button>)}</div><button className="secondary"><FileBarChart size={15}/>导出结算台账</button></div><div className="settlement-head"><span>结算项目</span><span>应结金额</span><span>确认金额</span><span>差异</span><span>进展</span><span>责任部门</span><span>截止日期</span><span>操作</span></div>{rows.length?rows.map(r=>{const progress=Math.round(r.actual/r.plan*100);return <div className="settlement-row" key={r.id}><strong>{r.name}</strong><span>¥{r.plan}万</span><span>¥{r.actual}万</span><span className={r.plan-r.actual>10?'bad-txt':''}>¥{(r.plan-r.actual).toFixed(1)}万</span><div><b>{r.statusLabel}</b><i><em style={{width:`${progress}%`}}></em></i></div><span>{r.owner}</span><span>{r.due}</span><button onClick={()=>notify(`已打开${r.name}结算详情`)}>详情</button></div>}):<div className="filter-empty">当前分类暂无结算项目</div>}</section><div className="settlement-bottom"><section className="panel"><div className="panel-head"><div><span>差异分析</span><h2>21.1万元差在哪里</h2></div></div>{[['人员费用核减','¥9.6万','45%'],['考核扣款复核','¥8.0万','38%'],['增减项材料缺失','¥3.5万','17%']].map(x=><div className="difference-row" key={x[0]}><strong>{x[0]}</strong><span>{x[1]}</span><i><em style={{width:x[2]}}></em></i><b>{x[2]}</b></div>)}</section><section className="panel"><div className="panel-head"><div><span>总监待办</span><h2>需要介入的结算节点</h2></div></div><div className="settlement-todo"><AlertTriangle size={19}/><div><strong>10015考核扣款存在口径分歧</strong><p>需与甲方确认重复投诉率扣款口径，截止07-23。</p></div><button onClick={()=>notify('已生成结算口径协调任务')}>发起协调</button></div><div className="settlement-todo"><Clock3 size={19}/><div><strong>400在线补充材料临近截止</strong><p>剩余1天，当前缺少人员费用明细附件。</p></div><button onClick={()=>notify('已向责任部门发送催办通知')}>催办</button></div></section></div></>
 }
 
-function ManagerPage({notify,trainingReport,readTrainingReport,hrbpCases,setPage}:{notify:(s:string)=>void;trainingReport:TrainingReportState;readTrainingReport:()=>void;hrbpCases:HrbpCase[];setPage:(page:string)=>void}){
+function ManagerPage({notify,trainingReport,readTrainingReport,hrbpCases,setPage,workflow}:{notify:(s:string)=>void;trainingReport:TrainingReportState;readTrainingReport:()=>void;hrbpCases:HrbpCase[];setPage:(page:string)=>void;workflow:WorkflowState|null}){
  const [trainingReportOpen,setTrainingReportOpen]=useState(false)
  const teams=[['前台普通一区','95.8','4.9%','68%','高'],['前台高星一区','98.1','3.2%','92%','低'],['预警专席区','97.4','3.8%','85%','中'],['工单督办区','96.9','4.1%','78%','中'],['末端闭环区','97.8','3.5%','89%','低']]
  const pendingHrbp=hrbpCases.filter(item=>item.status==='manager_pending'||item.status==='manager_contacting')
  return <><PageHead eyebrow="客服经理 · 10015升投" title="业务指标看结果，组织效能找原因" desc="经理不再逐班组看明细，先看哪位主管、哪个区域正在拖累业务目标。" actions={<button className="primary" onClick={()=>notify('已向主管下发本周重点')}><Target size={16}/>下发本周重点</button>}/>
+  {workflow&&workflow.financialPerformance?.metrics?.length>0&&<BudgetAchievementPanel state={workflow.financialPerformance} role="manager"/>}
   {pendingHrbp.length>0&&<section className="manager-hrbp-notice"><span><UserRoundSearch size={19}/></span><div><b>HRBP升级 · 经理待处理</b><h3>{pendingHrbp.length}名高流失风险员工需要经理介入</h3><p>{pendingHrbp.map(item=>`${item.name}（${item.cycle}，风险${item.riskScore}分）`).join('；')}</p></div><time>最早截止 {pendingHrbp[0].due}</time><button onClick={()=>setPage('tasks')}>进入PDCA处理 <ChevronRight size={14}/></button></section>}
   {trainingReport.sent&&<section className={`manager-training-notice ${trainingReport.read?'read':'unread'}`}><span><GraduationCap size={19}/></span><div><b>{trainingReport.read?'已查阅':'新消息 · 待查阅'}</b><h3>培训岗已提交今日培训日报</h3><p>{trainingReport.reportNo} · 岗前培训2个班、岗中专项3项，预计新工通关率88.5%。</p></div><time>{trainingReport.generatedAt}</time><button onClick={()=>{setTrainingReportOpen(true);readTrainingReport()}}>查阅日报 <ChevronRight size={14}/></button></section>}
   <section className="manager-summary"><div><span>本周经理判断</span><h2>满意率偏差主要来自普通客服一区；班长履职差异正在放大结果差异</h2><p>5个区域中1个高风险、2个需关注。建议将普通客服一区列为本周唯一红色改善区。</p></div><div><strong>1</strong><span>红色改善区</span></div><div><strong>3</strong><span>需辅导班长</span></div><div><strong>12</strong><span>尾端员工</span></div></section>
@@ -570,7 +598,7 @@ function ManagerPage({notify,trainingReport,readTrainingReport,hrbpCases,setPage
  </>
 }
 
-function SupervisorPage({alerts,notify,handleAlert,workflow,busy,run}:{alerts:Alert[];notify:(s:string)=>void;handleAlert:(id:string)=>void;workflow:WorkflowState|null;busy:boolean;run:(action:()=>Promise<WorkflowState>,success:string)=>void}){
+function SupervisorPage({alerts,notify,handleAlert,workflow,busy,run}:{alerts:Alert[];notify:(s:string)=>void;handleAlert:(id:string)=>void;workflow:WorkflowState|null;busy:boolean;run:WorkflowRunner}){
  const squads=[['2班','92.6%','11/15','86%','正常'],['4班','84.1%','9/15','68%','紧张'],['5班','89.7%','13/16','73%','关注'],['6班','91.8%','14/16','88%','正常'],['8班','83.4%','12/15','65%','紧张']]
   return <><PageHead eyebrow="客服主管 · 前台普通客服一区" title="先调度现场，再推动班长解决问题" desc="主管的价值是跨班组调度、抓班长履职、压质量风险，而不是替班长管员工。" actions={<button className="primary" onClick={()=>notify('现场巡检已完成，发现2个紧张班组')}><RefreshCw size={16}/>刷新现场</button>}/>
   <div className="supervisor-alertbar"><AlertTriangle size={19}/><div><strong>现场需要立即动作</strong><p>4班、8班未来30分钟人力缺口共5人；2件投诉工单临近超时；3名班长存在未关闭任务。</p></div><button onClick={()=>notify('已生成跨班组调度方案')}>生成调度方案</button></div>
@@ -750,7 +778,7 @@ function QualityPage({notify,workflow,setWorkflow,setPage}:{notify:(s:string)=>v
   const task=taskForEmployee(employee.id)
   if(!task){setQualityEmployees(current=>current.map(item=>item.id===employee.id?{...item,status:'已闭环'}:item));notify(`${employee.name}复检通过，问题已闭环`);return}
   setCollabBusy(true)
-  try{const next=await workflowApi.taskAction(task.id,'quality','quality_verify_success',{comment:'复检2通新录音均未发现同类问题，改善有效'});setWorkflow(next);notify(`${employee.name}复检通过，协同单已闭环并通知班长`)}catch(error){notify(error instanceof Error?error.message:'复检操作失败')}finally{setCollabBusy(false)}
+  try{const next=await workflowApi.taskAction(task.id,'quality','quality_verify_success',{comment:'复检2通新录音均未发现同类问题，改善有效'});setWorkflow(applyWorkflowMutation(workflow,next));notify(`${employee.name}复检通过，协同单已闭环并通知班长`)}catch(error){notify(error instanceof Error?error.message:'复检操作失败')}finally{setCollabBusy(false)}
  }
  const trainingVerifications=workflow?.training?.programs?.filter(program=>program.status==='quality_pending')||[]
  const verifyTrainingEffect=async(id:string,verified:boolean)=>{
@@ -787,9 +815,9 @@ function QualityProductionHub({workflow,setWorkflow,notify}:{workflow:WorkflowSt
  const calibrations=quality?.calibrations||[]
  const cases=quality?.cases||[]
  const failed=records.filter(item=>item.result==='failed')
- const act=async(action:()=>Promise<WorkflowState>,success:string)=>{
+ const act=async(action:()=>Promise<WorkflowMutationResult>,success:string)=>{
   setBusy(true)
-  try{const next=await action();setWorkflow(next);notify(success)}catch(error){notify(error instanceof Error?error.message:'质检生产操作失败')}finally{setBusy(false)}
+  try{const next=await action();setWorkflow(applyWorkflowMutation(workflow,next));notify(success)}catch(error){notify(error instanceof Error?error.message:'质检生产操作失败')}finally{setBusy(false)}
  }
  const advancePlan=()=>{
   if(!plan)return
@@ -888,7 +916,7 @@ function TrainingReportViewer({reportNo,close,mode,onSend,busy=false}:{reportNo:
  return <div className="training-report-backdrop" onClick={close}><section className="training-report-viewer" onClick={event=>event.stopPropagation()}><header><div><span><FileBarChart size={16}/>河北基地 · 每日培训日报</span><h2>培训交付与问题改善日报</h2><p>2026年7月24日 · {reportNo}</p></div><div><b>{mode==='manager'?'运营经理查阅版':'培训岗确认版'}</b><button aria-label="关闭培训日报" onClick={close}><X size={20}/></button></div></header><div className="training-report-body"><section className="report-summary-row"><article><span>岗前在训</span><strong>22人</strong><small>到位率91.7%</small></article><article><span>预计通关</span><strong>88.5%</strong><small>目标≥85%</small></article><article><span>岗中专项</span><strong>3项</strong><small>覆盖149人</small></article><article><span>任务按期率</span><strong>91.0%</strong><small>1项存在风险</small></article></section><section className="report-section"><header><b>01</b><div><span>岗前培训</span><h3>7月新工班进展</h3></div><em>整体正常</em></header><div className="report-table"><div><span>阶段</span><span>实际进展</span><span>目标</span><span>判断</span></div><div><strong>培训实施</strong><span>第6/10天 · 课程64%</span><span>按计划完成100%</span><em>正常</em></div><div><strong>理论学习</strong><span>平均91.2分</span><span>≥85分</span><em>达标</em></div><div><strong>场景实操</strong><span>通过率72.7%</span><span>阶段目标75%</span><em className="risk">差2.3pp</em></div><div><strong>通关预测</strong><span>19/22人</span><span>≥18人</span><em>可达成</em></div></div></section><section className="report-section"><header><b>02</b><div><span>岗中培训</span><h3>业务规范与重点差错</h3></div><em>3项推进中</em></header><ul><li><b>续约业务规范：</b>已覆盖67/86人，测试通过率93.1%，14:00完成剩余人员传达。</li><li><b>投诉首次联系：</b>已完成脚本校准，16:00组织28人场景演练。</li><li><b>工单建单合规：</b>课程与错例已发布，完成度92%，明日回收测试结果。</li></ul></section><section className="report-section report-risk-section"><header><b>03</b><div><span>风险与重点人员</span><h3>需要经理关注</h3></div><em>1项风险</em></header><div className="report-risk"><AlertTriangle size={18}/><div><strong>6名新工场景实操口径不完整</strong><p>其中3人为高风险，已安排18:30一对一强化。若明日复测仍未达标，将调整通关名单并延长实训。</p></div></div></section><section className="report-section"><header><b>04</b><div><span>明日计划</span><h3>目标与关键动作</h3></div><em>4项</em></header><ol><li>完成新工班第7天课程，课程累计进度达到76%。</li><li>完成6名薄弱学员复测，高风险人数压降至1人以内。</li><li>回收续约规范培训测试，覆盖率和通过率均达到95%以上。</li><li>联合质检验证工单建单合规改善结果。</li></ol></section></div><footer><span>汇报人：培训主管 刘颖 · 汇报对象：运营经理</span>{mode==='training'?<div><button className="secondary" disabled={busy} onClick={close}>返回修改</button><button className="primary" disabled={busy} onClick={onSend}>{busy?<RefreshCw size={15}/>:<Send size={15}/>}发送运营经理</button></div>:<button className="primary" onClick={close}><CheckCircle2 size={15}/>已阅并关闭</button>}</footer></section></div>
 }
 
-function HrbpPage({notify,cases,createCase,setPage,busy,workflow,run,realData}:{notify:(text:string)=>void;cases:HrbpCase[];createCase:(payload:Parameters<typeof workflowApi.createHrbpCase>[0])=>Promise<boolean>;setPage:(page:string)=>void;busy:boolean;workflow:WorkflowState|null;run:(action:()=>Promise<WorkflowState>,success:string)=>void;realData:RealDataState|null}){
+function HrbpPage({notify,cases,createCase,setPage,busy,workflow,run,realData}:{notify:(text:string)=>void;cases:HrbpCase[];createCase:(payload:Parameters<typeof workflowApi.createHrbpCase>[0])=>Promise<boolean>;setPage:(page:string)=>void;busy:boolean;workflow:WorkflowState|null;run:WorkflowRunner;realData:RealDataState|null}){
  const [dimension,setDimension]=useState<'班组'|'入职批次'|'员工周期'>('班组')
  const [riskFilter,setRiskFilter]=useState<'全部'|'高风险'|'中风险'>('全部')
  const [selectedEmployee,setSelectedEmployee]=useState<null|{id:string;name:string;team:string;batch:string;cycle:HrbpCase['cycle'];score:number;signals:string[];trend:string}>(null)
@@ -953,22 +981,23 @@ function HrbpPdcaPage({role,cases,act,busy,notify}:{role:'hrbp'|'manager';cases:
  </>
 }
 
-function ManagerPdcaHub({state,error,busy,run,cases,act,notify}:{state:WorkflowState|null;error:string;busy:boolean;run:(action:()=>Promise<WorkflowState>,success:string)=>void;cases:HrbpCase[];act:HrbpActionRunner;notify:(text:string)=>void}){
+function ManagerPdcaHub({state,error,busy,run,cases,act,notify}:{state:WorkflowState|null;error:string;busy:boolean;run:WorkflowRunner;cases:HrbpCase[];act:HrbpActionRunner;notify:(text:string)=>void}){
  const hrPending=cases.filter(item=>item.status==='manager_pending'||item.status==='manager_contacting').length
  const peoplePending=state?(state.people.staffingPlans.filter(item=>item.status==='manager_pending').length+state.people.lifecycle.filter(item=>item.status==='manager_pending').length+state.people.laborCases.filter(item=>['manager_pending','manager_doing'].includes(item.status)).length):0
- const governancePending=state?state.governance.shiftPlans.filter(item=>item.status==='manager_pending').length+state.governance.skillRoutes.filter(item=>item.status==='manager_pending').length+state.governance.crossDepartmentItems.filter(item=>item.targetRole==='manager'&&!['closed','director_verification'].includes(item.status)).length+state.governance.budgets.filter(item=>item.status==='returned').length+state.governance.contracts.filter(item=>item.status==='returned').length:0
- const [tab,setTab]=useState<'hrbp'|'people'|'governance'|'operation'>(hrPending?'hrbp':peoplePending?'people':governancePending?'governance':'operation')
- return <><div className="manager-pdca-tabs"><button className={tab==='hrbp'?'active':''} onClick={()=>setTab('hrbp')}><UserRoundSearch size={16}/>人员稳定任务{hrPending>0&&<b>{hrPending}</b>}</button><button className={tab==='people'?'active':''} onClick={()=>setTab('people')}><BriefcaseBusiness size={16}/>人事审批{peoplePending>0&&<b>{peoplePending}</b>}</button><button className={tab==='governance'?'active':''} onClick={()=>setTab('governance')}><Gauge size={16}/>生产与经营审批{governancePending>0&&<b>{governancePending}</b>}</button><button className={tab==='operation'?'active':''} onClick={()=>setTab('operation')}><ListChecks size={16}/>运营PDCA任务</button></div>{tab==='hrbp'?<HrbpPdcaPage role="manager" cases={cases} act={act} busy={busy} notify={notify}/>:tab==='people'?(state?<ManagerPeopleApprovals state={state} busy={busy} run={run}/>:<ServiceUnavailable error={error||'人事审批状态加载中'}/>):tab==='governance'?(state?<ManagerGovernanceApprovals state={state} busy={busy} run={run}/>:<ServiceUnavailable error={error||'生产审批状态加载中'}/>):<WorkflowTasksPage role="manager" state={state} error={error} busy={busy} run={run} notify={notify}/>}</>
+ const governancePending=state?state.governance.shiftPlans.filter(item=>item.status==='manager_pending').length+state.governance.skillRoutes.filter(item=>item.status==='manager_pending').length+state.governance.crossDepartmentItems.filter(item=>item.targetRole==='manager'&&!['closed','director_verification'].includes(item.status)).length+state.governance.budgets.filter(item=>item.status==='returned').length:0
+ const operationPending=state?state.tasks.filter(item=>item.status!=='closed'&&(item.initiatorRole==='manager'||item.executionOwnerRole==='manager'||item.ownerRole==='manager'||item.verificationRole==='manager')).length:0
+ const [tab,setTab]=useState<'operation'|'hrbp'|'people'|'governance'>('operation')
+ return <><div className="manager-pdca-tabs"><button className={tab==='operation'?'active':''} onClick={()=>setTab('operation')}><ListChecks size={16}/>精益任务管理{operationPending>0&&<b>{operationPending}</b>}</button><button className={tab==='hrbp'?'active':''} onClick={()=>setTab('hrbp')}><UserRoundSearch size={16}/>人员稳定任务{hrPending>0&&<b>{hrPending}</b>}</button><button className={tab==='people'?'active':''} onClick={()=>setTab('people')}><BriefcaseBusiness size={16}/>人事审批{peoplePending>0&&<b>{peoplePending}</b>}</button><button className={tab==='governance'?'active':''} onClick={()=>setTab('governance')}><Gauge size={16}/>生产与经营审批{governancePending>0&&<b>{governancePending}</b>}</button></div>{tab==='operation'?<WorkflowTasksPage key="manager-pdca" role="manager" state={state} error={error} busy={busy} run={run} notify={notify}/>:tab==='hrbp'?<HrbpPdcaPage role="manager" cases={cases} act={act} busy={busy} notify={notify}/>:tab==='people'?(state?<ManagerPeopleApprovals state={state} busy={busy} run={run}/>:<ServiceUnavailable error={error||'人事审批状态加载中'}/>):(state?<ManagerGovernanceApprovals state={state} busy={busy} run={run}/>:<ServiceUnavailable error={error||'生产审批状态加载中'}/>)}</>
 }
 
-function LeaderPdcaHub({state,setState,error,busy,run,notify}:{state:WorkflowState|null;setState:(state:WorkflowState)=>void;error:string;busy:boolean;run:(action:()=>Promise<WorkflowState>,success:string)=>void;notify:(text:string)=>void}){
+function LeaderPdcaHub({state,setState,error,busy,run,notify}:{state:WorkflowState|null;setState:(state:WorkflowState)=>void;error:string;busy:boolean;run:WorkflowRunner;notify:(text:string)=>void}){
  const learningPending=state?(state.learning.assignments.filter(item=>item.status==='leader_verification').length+state.learning.growthReviews.filter(item=>item.status==='leader_pending').length):0
  const operationPending=(state?.tasks||[]).filter(item=>item.status!=='closed'&&item.ownerRole==='leader').length
  const [tab,setTab]=useState<'learning'|'operation'>(learningPending?'learning':'operation')
  return <><div className="manager-pdca-tabs"><button className={tab==='learning'?'active':''} onClick={()=>setTab('learning')}><GraduationCap size={16}/>学习与成长验收{learningPending>0&&<b>{learningPending}</b>}</button><button className={tab==='operation'?'active':''} onClick={()=>setTab('operation')}><ListChecks size={16}/>运营PDCA任务{operationPending>0&&<b>{operationPending}</b>}</button></div>{tab==='learning'?(state?<LeaderLearningApprovals state={state} setState={setState} notify={notify}/>:<ServiceUnavailable error={error||'学习验收状态加载中'}/>):<WorkflowTasksPage role="leader" state={state} error={error} busy={busy} run={run} notify={notify}/>}</>
 }
 
-function HrbpPdcaHub({state,error,busy,run,cases,act,notify}:{state:WorkflowState|null;error:string;busy:boolean;run:(action:()=>Promise<WorkflowState>,success:string)=>void;cases:HrbpCase[];act:HrbpActionRunner;notify:(text:string)=>void}){
+function HrbpPdcaHub({state,error,busy,run,cases,act,notify}:{state:WorkflowState|null;error:string;busy:boolean;run:WorkflowRunner;cases:HrbpCase[];act:HrbpActionRunner;notify:(text:string)=>void}){
  const peoplePending=cases.filter(item=>item.status!=='closed'||(item.managerNote&&!item.filedAt)).length
  const aiPending=(state?.tasks||[]).filter(item=>item.workflowKind==='ai_action'&&item.status!=='closed'&&(item.originRole==='hrbp'||item.ownerRole==='hrbp'||item.verificationRole==='hrbp')).length
  const crossPending=state?.governance.crossDepartmentItems.filter(item=>item.targetRole==='hrbp'&&!['closed','director_verification'].includes(item.status)).length||0
@@ -980,7 +1009,7 @@ function AlertDrawer({alert,close,handle}:{alert:Alert;close:()=>void;handle:()=
 
 function AlertsPage({alerts,selectedAlert,setSelectedAlert,handleAlert}:{alerts:Alert[];selectedAlert:Alert|null;setSelectedAlert:(a:Alert)=>void;handleAlert:(id:string)=>void}){return <><PageHead eyebrow="AI巡检 · 每15分钟" title="预警不是消息，是必须关闭的管理事件" desc="规则给出信号，AI解释原因，管理者决定动作；所有动作进入PDCA跟踪。" actions={<button className="primary"><Bot size={16}/>配置预警规则</button>}/><div className="alert-workbench"><section className="alert-list panel"><div className="filter-row"><button className="active">全部 {alerts.length}</button><button>紧急 2</button><button>关注 2</button><button>处理中 1</button></div>{alerts.map(a=><button className={`alert-row ${selectedAlert?.id===a.id?'selected':''}`} key={a.id} onClick={()=>setSelectedAlert(a)}><span className={`sev-dot ${a.severity}`}></span><div><div><strong>{a.type}</strong><em>{a.status==='processing'?'处理中':'待处理'}</em></div><h3>{a.title}</h3><p>{a.team}{a.person?` · ${a.person}`:''}</p></div><time>{a.due}</time></button>)}</section><section className="panel alert-detail">{selectedAlert?<><div className="detail-top"><span className={`severity ${selectedAlert.severity}`}>{riskLabel[selectedAlert.severity]}</span><small>{selectedAlert.id}</small></div><h2>{selectedAlert.title}</h2><p className="evidence">{selectedAlert.evidence}</p><div className="ai-reason"><Bot size={20}/><div><strong>AI处置建议</strong><p>{selectedAlert.suggestion}</p></div></div><div className="evidence-grid"><div><span>所属组织</span><strong>{selectedAlert.team}</strong></div><div><span>置信度</span><strong>{selectedAlert.confidence}%</strong></div><div><span>截止时间</span><strong>{selectedAlert.due}</strong></div><div><span>数据来源</span><strong>{selectedAlert.source}</strong></div></div><button className="primary wide" onClick={()=>handleAlert(selectedAlert.id)}><Zap size={16}/>生成处置任务</button></>:<div className="empty">选择一条预警查看详情</div>}</section></div></>}
 
-function MeetingPage({notify,workflow,realData}:{notify:(s:string)=>void;workflow:WorkflowState|null;realData:RealDataState|null}){
+function MeetingPage({notify,workflow,realData,setWorkflow}:{notify:(s:string)=>void;workflow:WorkflowState|null;realData:RealDataState|null;setWorkflow:(state:WorkflowState)=>void}){
  const [startedAt,setStartedAt]=useState<number|null>(null)
  const [nowTick,setNowTick]=useState(Date.now())
  const [briefingEmployees,setBriefingEmployees]=useState<MorningEmployee[]>([])
@@ -988,6 +1017,13 @@ function MeetingPage({notify,workflow,realData}:{notify:(s:string)=>void;workflo
  const [scriptGenerating,setScriptGenerating]=useState(false)
  const [activeScriptIndex,setActiveScriptIndex]=useState(0)
  const [editableScript,setEditableScript]=useState<{label:string;text:string}[]>([])
+ const [recording,setRecording]=useState(false)
+ const [recordingBusy,setRecordingBusy]=useState(false)
+ const recorderRef=useRef<MediaRecorder|null>(null)
+ const recordingStreamRef=useRef<MediaStream|null>(null)
+ const recordingStartedRef=useRef(0)
+ const recordingChunksRef=useRef<Blob[]>([])
+ const assignedSchedule=workflow?.morningBriefings.schedules.find(item=>item.status==='issued'&&item.team==='普通客服一区·8班')||workflow?.morningBriefings.schedules.find(item=>item.status==='issued')
  useEffect(()=>{if(startedAt===null)return;const timer=window.setInterval(()=>setNowTick(Date.now()),500);return()=>window.clearInterval(timer)},[startedAt])
  useEffect(()=>{reportApi.preview('north-center-10015','team-morning-brief').then(data=>setBriefingEmployees(data.briefingRows||[])).catch(()=>setBriefingEmployees([]))},[])
  const remaining=startedAt===null?15*60:Math.max(0,15*60-Math.floor((nowTick-startedAt)/1000))
@@ -1033,7 +1069,19 @@ function MeetingPage({notify,workflow,realData}:{notify:(s:string)=>void;workflo
  const generateScript=()=>{setScriptOpen(true);setScriptGenerating(true);setActiveScriptIndex(0);window.setTimeout(()=>{setEditableScript(meetingScript);setScriptGenerating(false);notify('班前会宣讲内容已生成，可编辑后照稿宣讲')},650)}
  const updateScriptSection=(index:number,text:string)=>setEditableScript(current=>current.map((section,itemIndex)=>itemIndex===index?{...section,text}:section))
  const copyScript=async()=>{try{await navigator.clipboard.writeText(scriptText);notify('宣讲稿已复制')}catch{notify('复制失败，请手动选择宣讲内容')}}
- return <><PageHead eyebrow="班组管理基本功 · 昨日复盘 → 今日目标" title="今天的班前会，先讲结果，再把动作落到人" desc={`根据前一日指标达成、重点员工、质检问题和今日目标，形成班长可直接宣讲的内容。${realData?` 数据截至 ${realData.morning.date}。`:''}`} actions={<><button className="secondary" disabled={startedAt!==null} onClick={()=>{const start=Date.now();setStartedAt(start);setNowTick(start);notify('班前会已开始，系统开始计时')}}><Play size={16}/>{running?'会议进行中':startedAt!==null?'会议已结束':'开始班前会'}</button><button className="primary" onClick={generateScript}><Sparkles size={16}/>一键生成宣讲稿</button></>}/>
+ const toggleRecording=async()=>{
+  if(recording){recorderRef.current?.stop();recordingStreamRef.current?.getTracks().forEach(track=>track.stop());setRecording(false);return}
+  if(!assignedSchedule){notify('当前没有主管已下发的班前会排期');return}
+  try{
+   const stream=await navigator.mediaDevices.getUserMedia({audio:true});const recorder=new MediaRecorder(stream)
+   recordingStreamRef.current=stream;recorderRef.current=recorder;recordingStartedRef.current=Date.now()
+   recordingChunksRef.current=[];recorder.ondataavailable=event=>{if(event.data.size)recordingChunksRef.current.push(event.data)}
+   recorder.onstop=async()=>{setRecordingBusy(true);try{const durationSeconds=Math.max(1,Math.round((Date.now()-recordingStartedRef.current)/1000));const audio=new Blob(recordingChunksRef.current,{type:recorder.mimeType||'audio/webm'}),bytes=new Uint8Array(await audio.arrayBuffer());let binary='';for(let index=0;index<bytes.length;index+=0x8000)binary+=String.fromCharCode(...bytes.subarray(index,index+0x8000));const next=await workflowApi.morningScheduleAction(assignedSchedule.id,'leader','complete',{durationSeconds,fileName:`${assignedSchedule.team}_${assignedSchedule.date}_班前会.webm`,mimeType:audio.type||'audio/webm',contentBase64:btoa(binary)});setWorkflow(next);notify(`录音已保存，系统质量初评 ${next.morningBriefings.schedules.find(item=>item.id===assignedSchedule.id)?.qualityScore||'—'} 分`)}catch(error){notify(error instanceof Error?error.message:'录音提交失败')}finally{setRecordingBusy(false);recordingChunksRef.current=[]}}
+   recorder.start();setRecording(true);if(startedAt===null){const start=Date.now();setStartedAt(start);setNowTick(start)}notify('录音已开始，将用于班前会质量评分')
+  }catch{notify('无法启用麦克风，请检查浏览器录音权限')}
+ }
+ return <><PageHead eyebrow="班组管理基本功 · 昨日复盘 → 今日目标" title="今天的班前会，先讲结果，再把动作落到人" desc={`根据前一日指标达成、重点员工、质检问题和今日目标，形成班长可直接宣讲的内容。${realData?` 数据截至 ${realData.morning.date}。`:''}`} actions={<><button className={`secondary meeting-record ${recording?'active':''}`} disabled={recordingBusy} onClick={()=>void toggleRecording()}><RadioTower size={16}/>{recording?'停止并提交录音':recordingBusy?'正在评分':'开始录音'}</button><button className="secondary" disabled={startedAt!==null} onClick={()=>{const start=Date.now();setStartedAt(start);setNowTick(start);notify('班前会已开始，系统开始计时')}}><Play size={16}/>{running?'会议进行中':startedAt!==null?'会议已结束':'开始班前会'}</button><button className="primary" onClick={generateScript}><Sparkles size={16}/>一键生成宣讲稿</button></>}/>
+  {assignedSchedule&&<section className="meeting-assignment"><CalendarDays size={18}/><div><span>主管已下发 · {assignedSchedule.date} {assignedSchedule.time}</span><strong>{assignedSchedule.team} · {assignedSchedule.title}</strong><p>{assignedSchedule.focus.join('　·　')}</p></div><em>{assignedSchedule.status==='completed'?`已召开 · ${assignedSchedule.qualityScore}分`:'待召开录音'}</em></section>}
   {realData&&<div className="live-data-scope"><Database size={16}/><div><strong>班前会已接入真实库</strong><span>{realData.meta.warning}</span></div></div>}
   <div className="meeting-overview"><section className="panel meeting-agenda"><div className="meeting-clock"><span>标准时长</span><strong>{clock}</strong><small>{running?'正在记录...':startedAt!==null?'会议已结束':'五个环节 · 15分钟'}</small></div>{agenda.map((item,index)=><article className="meeting-step" key={item.label}><time>{item.time}</time><b>{index+1}</b><div><header><h3>{item.label}</h3><em>{item.tag}</em></header><p>{item.text}</p></div></article>)}</section>
    <section className="panel meeting-review"><div className="panel-head"><div><span>前一日目标复盘</span><h2>1项达标 · 5项需追回</h2></div><em>数据截至昨日收班</em></div><div className="yesterday-kpis">{yesterdayReview.map(item=><article className={item.tone} key={item.label}><span>{item.label}</span><strong>{item.value}</strong><small>目标 {item.target}</small><footer><b>{item.result}</b><em>{item.gap}</em></footer></article>)}</div><div className="today-target-box"><header><Target size={19}/><div><span>目标导向</span><strong>今日六项硬目标</strong></div></header><div>{todayTargets.map(target=><b key={target}>{target}</b>)}</div></div></section>
@@ -1052,9 +1100,9 @@ function MeetingPage({notify,workflow,realData}:{notify:(s:string)=>void;workflo
  </>
 }
 
-function TeamPage({notify,realData}:{notify:(s:string)=>void;realData:RealDataState|null}){
+function TeamPage({role,notify,realData,busy,run}:{role:Role;notify:(s:string)=>void;realData:RealDataState|null;busy:boolean;run:WorkflowRunner}){
  const [sort,setSort]=useState<'risk'|'achievement'>('risk')
- if(realData?.team.members.length)return <LiveTeamPage data={realData} sort={sort} setSort={setSort}/>
+ if(realData?.team.members.length)return <LiveTeamPage data={realData} role={role} sort={sort} setSort={setSort} busy={busy} run={run} notify={notify}/>
  const targetProfiles:Record<string,{response:number;cph:number;satisfaction:number;busyRest:number;sales:number;conversion:number;marketingAmount:number;talent:'重点员工'|'潜力员工'|'标杆员工'|'稳定员工';summary:string}> = {
   JR10381:{response:90,cph:15.5,satisfaction:97.5,busyRest:10,sales:7,conversion:18,marketingAmount:7200,talent:'稳定员工',summary:'服务与产能均达标，营销转化仍有提升空间；建议在高峰后补充二次营销触达。'},
   JR10822:{response:85,cph:15,satisfaction:97.2,busyRest:11,sales:6,conversion:16,marketingAmount:6100,talent:'稳定员工',summary:'整体表现稳定，满意率达标；小休略高于个人目标，注意非通话时长管理。'},
@@ -1089,7 +1137,14 @@ function TeamPage({notify,realData}:{notify:(s:string)=>void;realData:RealDataSt
  const totalAmount=people.reduce((sum,item)=>sum+item.marketing.amount,0)
  const averageConversion=people.reduce((sum,item)=>sum+item.marketing.conversion,0)/people.length
  const teamChart=people.map(item=>({name:item.name,value:item.achievement,talent:item.target.talent}))
- return <><PageHead eyebrow="目标管理 · 服务与营销双轮驱动" title={`${members.length}个人，每个人都有自己的目标刻度`} desc="河北回流10010服务指标与营销指标统一管理，用个人目标衡量达成、识别潜力与重点员工。" actions={<button className="secondary" onClick={()=>setSort(sort==='risk'?'achievement':'risk')}><BarChart3 size={16}/>按{sort==='risk'?'综合达成':'风险'}排序</button>}/>
+ const actionMembers:TeamActionMember[]=people.map(item=>({
+  jobNo:item.id,name:item.name,team:'普通客服一区·8班',stage:item.stage,dataDate:'演示数据',
+  responses:{actual:item.response,target:item.target.response},cph:{actual:item.cph,target:item.target.cph},
+  workHours:{actual:Number((item.response/item.cph).toFixed(2)),target:Number((item.target.response/item.target.cph).toFixed(2))},
+  utilization:{actual:null,target:null},handleTime:{actual:null,target:null},busyRest:{actual:item.busyRest,target:item.target.busyRest},
+  sourceImpacts:{workHours:null,utilization:null,talkTime:null,afterCall:null,busyRest:null},
+ }))
+ return <><PageHead eyebrow="目标管理 · 服务与营销双轮驱动" title={`${members.length}个人，每个人都有自己的目标刻度`} desc="河北回流10010服务指标与营销指标统一管理，用个人目标衡量达成、识别潜力与重点员工。" actions={<><TeamActionTools members={actionMembers} role={role} busy={busy} run={run} notify={notify}/><button className="secondary" onClick={()=>setSort(sort==='risk'?'achievement':'risk')}><BarChart3 size={16}/>按{sort==='risk'?'综合达成':'风险'}排序</button></>}/>
   <section className="team-marketing-strip">
    <div className="marketing-heading"><div><span>河北回流 10010 · 营销通报</span><h2>服务做好，更要抓住每一次营销机会</h2><p>统计口径：昨日有效营销办理及回流转化，当前为拟定演示数据。</p></div><b>重点指标</b></div>
    <article><span>营销办理量</span><strong>{totalSales}<small>单</small></strong><p>目标 {salesTarget}单</p><em className={totalSales>=salesTarget?'good':'risk'}>{Math.round(totalSales/salesTarget*100)}% 达成</em></article>
@@ -1105,7 +1160,7 @@ function TeamPage({notify,realData}:{notify:(s:string)=>void;realData:RealDataSt
  </>
 }
 
-function LiveTeamPage({data,sort,setSort}:{data:RealDataState;sort:'risk'|'achievement';setSort:(value:'risk'|'achievement')=>void}){
+function LiveTeamPage({data,role,sort,setSort,busy,run,notify}:{data:RealDataState;role:Role;sort:'risk'|'achievement';setSort:(value:'risk'|'achievement')=>void;busy:boolean;run:WorkflowRunner;notify:(text:string)=>void}){
  const members=data.team.members
  const score=(member:(typeof members)[number])=>{
   const values=Object.values(member.metrics)
@@ -1119,7 +1174,17 @@ function LiveTeamPage({data,sort,setSort}:{data:RealDataState;sort:'risk'|'achie
  const marketingTotal=data.team.marketing.broadband.result+data.team.marketing.package.result
  const value=(metric:LiveMember['metrics'][keyof LiveMember['metrics']])=>metric.actual==null?'—':`${metric.actual.toLocaleString('zh-CN')}${metric.unit}`
  const target=(metric:LiveMember['metrics'][keyof LiveMember['metrics']])=>metric.target==null?'未配置':`${metric.direction==='lower'?'≤':''}${metric.target.toLocaleString('zh-CN')}${metric.unit}`
- return <><PageHead eyebrow="真实数据 · 员工个人目标管理" title={`${members.length}名员工，按每个人自己的目标看达成`} desc={`产能、质量和营销统一通报。数据截至 ${members[0]?.dataDate||'—'}；${data.meta.warning}`} actions={<button className="secondary" onClick={()=>setSort(sort==='risk'?'achievement':'risk')}><BarChart3 size={16}/>按{sort==='risk'?'综合达成':'风险'}排序</button>}/>
+ const actionMembers:TeamActionMember[]=members.map(member=>({
+  jobNo:member.jobNo,name:member.name,team:member.team,stage:member.stage,dataDate:member.dataDate,
+  responses:{actual:member.metrics.responses.actual,target:member.metrics.responses.target},
+  cph:{actual:member.metrics.cph.actual,target:member.metrics.cph.target},
+  workHours:{actual:member.productivityDrivers.workHours.actual,target:member.productivityDrivers.workHours.target},
+  utilization:{actual:member.productivityDrivers.utilization.actual,target:member.productivityDrivers.utilization.target},
+  handleTime:{actual:member.productivityDrivers.handleTime.actual,target:member.productivityDrivers.handleTime.target},
+  busyRest:{actual:member.productivityDrivers.busyRest.actual,target:member.productivityDrivers.busyRest.target},
+  sourceImpacts:member.productivityDrivers.sourceImpacts,
+ }))
+ return <><PageHead eyebrow="真实数据 · 员工个人目标管理" title={`${members.length}名员工，按每个人自己的目标看达成`} desc={`产能、质量和营销统一通报。数据截至 ${members[0]?.dataDate||'—'}；${data.meta.warning}`} actions={<><TeamActionTools members={actionMembers} role={role} busy={busy} run={run} notify={notify}/><button className="secondary" onClick={()=>setSort(sort==='risk'?'achievement':'risk')}><BarChart3 size={16}/>按{sort==='risk'?'综合达成':'风险'}排序</button></>}/>
   <div className="live-data-scope"><Database size={16}/><div><strong>{data.meta.scopeLabel}</strong><span>来源：{data.meta.sourceSchema}.bpo_dws_base_pord_sum · 每名员工保留独立目标值和Gap判断</span></div></div>
   <section className="team-marketing-strip"><div className="marketing-heading"><div><span>营销真实数据通报</span><h2>宽带与流量包结果已纳入班组看数</h2><p>来源：f_sh_yx_kd、f_sh_yx_llb；当前源库为上海测试数据范围。</p></div><b>真实库</b></div><article><span>宽带营销结果</span><strong>{data.team.marketing.broadband.result.toLocaleString('zh-CN')}</strong><p>账期 {data.team.marketing.broadband.period}</p><em className="good">{data.team.marketing.broadband.rowsCount}条事实</em></article><article><span>流量包营销结果</span><strong>{data.team.marketing.package.result.toLocaleString('zh-CN')}</strong><p>账期 {data.team.marketing.package.period}</p><em className="good">{data.team.marketing.package.rowsCount}条事实</em></article><article><span>营销结果合计</span><strong>{marketingTotal.toLocaleString('zh-CN')}</strong><p>宽带 + 流量包</p><em>按源表口径汇总</em></article><article><span>潜力 / 重点员工</span><strong>{members.filter(item=>item.flags.potential).length} / {members.filter(item=>item.flags.focus).length}</strong><p>按个人目标达成识别</p><em className="risk">需班长跟进</em></article></section>
   <div className="team-chart-grid"><section className="panel team-achievement-chart"><div className="panel-head"><div><span>班组目标达成</span><h2>各指标达成人数</h2></div><em>共 {members.length} 人</em></div><div className="team-chart-body"><ResponsiveContainer width="100%" height="100%"><BarChart data={chart} margin={{top:8,right:8,left:-25,bottom:0}}><CartesianGrid stroke="#e8eef4" vertical={false}/><XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fontSize:9,fill:'#687c91'}}/><YAxis allowDecimals={false} axisLine={false} tickLine={false}/><Tooltip/><Bar dataKey="value" radius={[4,4,0,0]} fill="#1677b8"/></BarChart></ResponsiveContainer></div></section><section className="panel team-person-chart"><div className="panel-head"><div><span>人员综合达成</span><h2>个人指标达成率</h2></div></div><div className="team-chart-body"><ResponsiveContainer width="100%" height="100%"><BarChart data={peopleChart}><CartesianGrid stroke="#e8eef4" vertical={false}/><XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fontSize:9}}/><YAxis domain={[0,100]}/><Tooltip/><Bar dataKey="value" radius={[4,4,0,0]}>{peopleChart.map(item=><Cell key={item.name} fill={item.talent==='重点员工'?'#e76464':item.talent==='潜力员工'?'#e9a23b':'#58a3d1'}/>)}</Bar></BarChart></ResponsiveContainer></div></section></div>
@@ -1136,7 +1201,7 @@ function workflowTaskStatus(status:string,verificationRole?:string){return statu
 function workflowEventStatus(status:string){return ({pending_supervisor_review:'待主管确认',approved:'已形成任务',rejected:'已驳回',closed:'已闭环'} as Record<string,string>)[status]||status}
 const fmtTime=(v:string)=>new Date(v).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'})
 
-function WorkflowCenter({role,state,error,busy,selectedId,setSelectedId,run}:{role:Role;state:WorkflowState|null;error:string;busy:boolean;selectedId:string;setSelectedId:(id:string)=>void;run:(a:()=>Promise<WorkflowState>,s:string)=>void}){
+function WorkflowCenter({role,state,error,busy,selectedId,setSelectedId,run}:{role:Role;state:WorkflowState|null;error:string;busy:boolean;selectedId:string;setSelectedId:(id:string)=>void;run:WorkflowRunner}){
  const [eventFilter,setEventFilter]=useState('全部')
  const filteredEvents=state?.events.filter(event=>eventFilter==='全部'||event.type===eventFilter)||[]
  const current=filteredEvents.find(e=>e.id===(selectedId||filteredEvents[0]?.id))||filteredEvents[0]
@@ -1146,22 +1211,14 @@ function WorkflowCenter({role,state,error,busy,selectedId,setSelectedId,run}:{ro
  return <><PageHead eyebrow={`动态业务闭环 · 半小时批次 #${state.meta.batchNo}`} title="四类预警主管确认台" desc="规则生成预警后不会直接下发班长，必须由主管确认；确认后才生成PDCA任务。" actions={<><button className="secondary" disabled={busy} onClick={()=>run(workflowApi.reset,'演示数据已重置')}><RefreshCw size={15}/>重置演示</button><button className="primary" disabled={busy} onClick={()=>run(workflowApi.refresh,'半小时数据刷新完成')}><Database size={15}/>执行半小时刷新</button></>}/><div className="workflow-meta"><span><i></i>API已连接</span><span>最后刷新 {fmtTime(state.meta.lastRefresh)}</span><span>下次刷新 {fmtTime(state.meta.nextRefresh)}</span><span>规则：员工/话务/投诉/质量</span></div><div className="workflow-grid"><section className="panel workflow-event-list"><div className="workflow-filter">{['全部','员工异常','话务异常','投诉超时','质量趋势'].map(x=><button key={x} className={eventFilter===x?'active':''} onClick={()=>setEventFilter(x)}>{x}</button>)}</div>{filteredEvents.length?filteredEvents.map(e=><button key={e.id} className={current?.id===e.id?'selected':''} onClick={()=>setSelectedId(e.id)}><span className={`sev-dot ${e.severity}`}></span><div><header><strong>{e.type}</strong><em>{workflowEventStatus(e.status)}</em></header><h3>{e.title}</h3><p>{e.team} · 截止 {fmtTime(e.dueAt)}</p></div><ChevronRight size={15}/></button>):<div className="filter-empty">当前分类暂无预警</div>}</section><section className="panel workflow-event-detail">{current&&<><header><div><span className={`severity ${current.severity}`}>{current.severity==='critical'?'紧急':'关注'}</span><small>{current.id} · {current.rule}</small></div><b>{workflowEventStatus(current.status)}</b></header><h2>{current.title}</h2><p className="evidence">{current.evidence}</p><div className="workflow-evidence"><div><span>数据来源</span><strong>{current.source}</strong></div><div><span>责任组织</span><strong>{current.team}</strong></div><div><span>主管审批人</span><strong>{current.reviewer}</strong></div><div><span>SLA截止</span><strong>{fmtTime(current.dueAt)}</strong></div></div><div className="workflow-suggestion"><Bot size={20}/><div><strong>系统处置建议</strong><p>{current.suggestion}</p></div></div><div className="workflow-history"><h3>事件轨迹</h3>{current.history.map((h,i)=><div key={i}><span></span><time>{fmtTime(h.at)}</time><strong>{h.actor}</strong><p>{h.action}</p></div>)}</div>{current.status==='pending_supervisor_review'&&<footer>{canReview?<><button className="secondary" onClick={()=>run(()=>workflowApi.review(current.id,'reject','数据证据不足，退回规则复核'),'预警已驳回并记录审计')}><X size={15}/>驳回</button><button className="primary" onClick={()=>run(()=>workflowApi.review(current.id,'approve','确认异常，按建议动作下发'),'主管已确认，PDCA任务已生成')}><CheckCircle2 size={15}/>确认并下发任务</button></>:<div className="review-lock"><LockKeyhole size={16}/>当前岗位无审批权限，请切换“客服主管”完成确认</div>}</footer>}</>}</section></div></>
 }
 
-function WorkflowTasksPage({role,state,error,busy,run,notify}:{role:Role;state:WorkflowState|null;error:string;busy:boolean;run:(a:()=>Promise<WorkflowState>,s:string)=>void;notify:(text:string)=>void}){
+function WorkflowTasksPage({role,state,error,busy,run,notify}:{role:Role;state:WorkflowState|null;error:string;busy:boolean;run:WorkflowRunner;notify:(text:string)=>void}){
  const [evidence,setEvidence]=useState('已完成1V1问题复盘与规范辅导，并抽取2通新录音作为改善证据。')
  const [verificationComment,setVerificationComment]=useState('')
  const [selectedTaskId,setSelectedTaskId]=useState('')
  if(error)return <ServiceUnavailable error={error}/>
  if(!state)return <div className="workflow-loading"><RefreshCw size={21}/><span>正在加载持久化任务...</span></div>
- const roleTasks=state.tasks.filter(task=>{
-  if(task.workflowKind==='lean_directive')return task.initiatorRole===role||task.executionOwnerRole===role||task.ownerRole===role||task.verificationRole===role
-  if(task.workflowKind==='ai_action')return task.originRole===role||task.ownerRole===role||task.verificationRole===role
-  if(task.workflowKind==='meeting_action')return task.originRole===role||task.ownerRole===role||task.verificationRole===role
-  if(role==='quality')return task.verificationRole==='quality'
-  if(role==='employee')return task.verificationRole==='employee'
-  if(role==='leader')return task.ownerRole==='leader'||task.sourceLabel==='质检协同单'
-  return task.ownerRole===role||task.verificationRole===role
- })
- const task=roleTasks.find(item=>item.id===selectedTaskId)||roleTasks.find(item=>item.status!=='closed'&&item.ownerRole===role)||roleTasks.find(item=>item.status!=='closed')||roleTasks[0]
+ const roleTasks=state.tasks.filter(task=>workflowTaskVisibleForRole(task,role))
+ const task=roleTasks.find(item=>item.id===selectedTaskId)
  const isQualityTask=task?.verificationRole==='quality'
  const isEmployeeSupport=task?.verificationRole==='employee'
  const isAiTask=task?.workflowKind==='ai_action'
@@ -1174,11 +1231,15 @@ function WorkflowTasksPage({role,state,error,busy,run,notify}:{role:Role;state:W
  const responsibility=task?roleLabels[task.ownerRole]||task.ownerRole:''
  const verificationLabel=task?roleLabels[task.verificationRole||'supervisor']||task.verificationRole:''
  return <>
-  <PageHead eyebrow="真实状态机 · 刷新不丢失" title={role==='quality'?'质检协同复检中心':role==='employee'?'我的支持请求':'PDCA动态任务中心'} desc={role==='quality'?'接收班长辅导证据，复检通过后闭环；未通过则退回班长继续整改。':role==='employee'?'查看班长处理结果，确认问题是否真正解决；未解决可带着补充说明退回。':'围绕具体问题设目标、定时限、做动作、交证据，并用系统指标趋势辅助上级验收。'} actions={<button className="secondary" disabled={!canEscalate||busy} title={!canEscalate?'协同任务不走普通逾期升级链路':`将升级至${nextRole}`} onClick={()=>run(()=>workflowApi.simulateTimeout(role),`已模拟SLA逾期，任务升级至${nextRole}`)}><Clock3 size={15}/>{canEscalate?`模拟逾期→${nextRole}`:'当前不可升级'}</button>}/>
-  {['supervisor','manager','director'].includes(role)&&<LeanPdcaDashboard role={role} state={state} busy={busy} run={run} notify={notify}/>}
-  <div className="workflow-stagebar">{[['P',isLeanTask?'问题定位与目标':isAiTask?'AI建议确认':isMeetingTask?'会议下发':'问题触发'],['D',isLeanTask?`${roleLabels[task?.executionOwnerRole||'']}执行`:isAiTask?`${roleLabels[task?.originRole||role]}执行`:isMeetingTask?'责任岗位执行':'班长响应'],['C',isLeanTask?'系统数据辅助验证':isMeetingTask?'总监验收':isAiTask?`${verificationLabel}验收`:isQualityTask?'质检复检':isEmployeeSupport?'员工确认':'主管验证'],['A',isLeanTask?'固化标准与关闭':'关闭/升级']].map(step=><div className={task&&(task.phase===step[0]||step[0]==='P')?'active':''} key={step[0]}><b>{step[0]}</b><span>{step[1]}</span></div>)}</div>
-  {roleTasks.length>1&&<div className="workflow-task-switcher">{roleTasks.map(item=><button className={item.id===task?.id?'active':''} key={item.id} onClick={()=>setSelectedTaskId(item.id)}><span>{item.sourceLabel||item.type}</span><strong>{item.person||item.title}</strong><em className={item.status}>{workflowTaskStatus(item.status,item.verificationRole)}</em></button>)}</div>}
-  {!task?<div className="workflow-empty"><ListChecks size={35}/><h2>暂无PDCA任务</h2><p>{role==='quality'?'质检发起协同后，任务将先进入班长PDCA；班长提交证据后回到这里复检。':role==='employee'?'在个人作战台发起班长支持后，处理进度会在这里持续更新。':'员工、质检或客服主管下发后，任务会自动进入本岗位。'}</p></div>:<div className="workflow-task-grid">
+  <PageHead eyebrow="真实状态机 · 刷新不丢失" title={role==='quality'?'质检协同复检中心':role==='employee'?'我的支持请求':'PDCA动态任务中心'} desc={role==='quality'?'接收班长辅导证据，复检通过后闭环；未通过则退回班长继续整改。':role==='employee'?'查看班长处理结果，确认问题是否真正解决；未解决可带着补充说明退回。':'第一层查看任务统计与风险，点击任务单后在第二层完成执行、验证和闭环。'}/>
+  <LeanPdcaDashboard role={role} state={state} busy={busy} run={run} notify={notify} onOpenTask={setSelectedTaskId}/>
+  {task&&<div className="workflow-task-modal-shade" onMouseDown={()=>setSelectedTaskId('')}>
+   <section className="workflow-task-modal" role="dialog" aria-modal="true" aria-labelledby="workflow-task-modal-title" onMouseDown={event=>event.stopPropagation()}>
+    <header className="workflow-task-modal-head"><div><span>{task.sourceLabel||task.type} · {task.id}</span><h2 id="workflow-task-modal-title">{task.title}</h2><p>任务单详情与执行操作 · 当前责任岗位：{responsibility}</p></div><div>{canEscalate&&<button className="workflow-task-timeout" disabled={busy} onClick={()=>run(()=>workflowApi.simulateTimeout(role),`已模拟SLA逾期，任务升级至${nextRole}`)}><Clock3 size={15}/>模拟逾期→{nextRole}</button>}<button type="button" aria-label="关闭任务详情" onClick={()=>setSelectedTaskId('')}><X size={20}/></button></div></header>
+    <div className="workflow-task-modal-body">
+     <div className="workflow-stagebar">{[['P',isLeanTask?'问题定位与目标':isAiTask?'AI建议确认':isMeetingTask?'会议下发':'问题触发'],['D',isLeanTask?`${roleLabels[task.executionOwnerRole||'']}执行`:isAiTask?`${roleLabels[task.originRole||role]}执行`:isMeetingTask?'责任岗位执行':'班长响应'],['C',isLeanTask?'系统数据辅助验证':isMeetingTask?'总监验收':isAiTask?`${verificationLabel}验收`:isQualityTask?'质检复检':isEmployeeSupport?'员工确认':'主管验证'],['A',isLeanTask?'固化标准与关闭':'关闭/升级']].map(step=><div className={task.phase===step[0]||step[0]==='P'?'active':''} key={step[0]}><b>{step[0]}</b><span>{step[1]}</span></div>)}</div>
+     <TaskComments task={task} role={role} busy={busy} run={run}/>
+     <div className="workflow-task-grid">
    <section className="panel task-case">
     <header><div><span>{task.sourceLabel||task.type} · {task.id}</span><h2>{task.title}</h2></div><em className={task.status}>{workflowTaskStatus(task.status,task.verificationRole)}</em></header>
     <div className="task-case-meta"><div><span>当前责任岗位</span><strong>{responsibility}</strong></div><div><span>执行责任人</span><strong>{task.owner}</strong></div><div><span>{isQualityTask?'班长反馈截止':'截止时间'}</span><strong>{fmtTime(task.dueAt)}</strong></div><div><span>任务进度</span><strong>{task.progress}%</strong></div></div>
@@ -1208,13 +1269,17 @@ function WorkflowTasksPage({role,state,error,busy,run,notify}:{role:Role;state:W
     </div>
     <TaskAttachments task={task} role={role} busy={busy} run={run} notify={notify}/>
     <TaskImprovementPanel task={task} role={role}/>
+    <LeanTaskManagementPanel task={task} role={role} busy={busy} run={run}/>
    </section>
    <section className="panel task-timeline"><div className="panel-head"><div><span>全程留痕</span><h2>任务操作时间线</h2></div></div>{task.history.map((history,index)=><div className="timeline-row" key={index}><span></span><div><time>{fmtTime(history.at)}</time><strong>{history.actor}</strong><p>{history.action}</p></div></div>)}</section>
+     </div>
+    </div>
+   </section>
   </div>}
  </>
 }
 
-function WorkflowTasksPageLegacy({role,state,error,busy,run}:{role:Role;state:WorkflowState|null;error:string;busy:boolean;run:(a:()=>Promise<WorkflowState>,s:string)=>void}){
+function WorkflowTasksPageLegacy({role,state,error,busy,run}:{role:Role;state:WorkflowState|null;error:string;busy:boolean;run:WorkflowRunner}){
  const [evidence,setEvidence]=useState('已完成员工面谈，确认近期工作负荷偏高；安排明日1小时跟岗辅导。')
  const [selectedTaskId,setSelectedTaskId]=useState('')
  if(error)return <ServiceUnavailable error={error}/>
@@ -1282,7 +1347,7 @@ function AiSettingsPage({actor,notify}:{actor:string;notify:(text:string)=>void}
  </>
 }
 
-function UserManagementPage({users,saveUser,userAction,roles,notify,busy,error}:{users:SystemUser[];saveUser:(user:SystemUser)=>Promise<boolean>;userAction:(id:string,action:'toggle_status'|'reset_password')=>Promise<boolean>;roles:SystemRole[];notify:(s:string)=>void;busy:boolean;error:string}){
+function UserManagementPage({users,saveUser,userAction,roles,organization,notify,busy,error}:{users:SystemUser[];saveUser:(user:SystemUser)=>Promise<boolean>;userAction:(id:string,action:'toggle_status'|'reset_password')=>Promise<boolean>;roles:SystemRole[];organization:OrganizationDirectory;notify:(s:string)=>void;busy:boolean;error:string}){
  const [keyword,setKeyword]=useState('')
  const [editing,setEditing]=useState<SystemUser|null>(null)
  const [showPassword,setShowPassword]=useState(false)
@@ -1300,15 +1365,16 @@ function UserManagementPage({users,saveUser,userAction,roles,notify,busy,error}:
   if(await saveUser(normalized))setEditing(null)
  }
  const resetPassword=(user:SystemUser)=>userAction(user.id,'reset_password')
- return <><PageHead eyebrow="系统管理 · 账号与权限" title="用户管理" desc="维护用户账号、岗位、角色、联系方式与角色外模块配置，确保人员信息完整、权限可追溯。" actions={<button className="primary" onClick={()=>setEditing({id:nextUserId(),name:'',jobNo:'',roleId:'customer-agent',jobTitle:'客服专员',department:'河北基地',phone:'',email:'',status:'active',password:'',forceChangePassword:true,moduleOverrides:[],createdAt:new Date().toISOString().slice(0,10)})}><UserPlus size={16}/>新增用户</button>}/>
+ return <><PageHead eyebrow="系统管理 · 组织与账号" title="组织与用户管理" desc="组织名录来自人力架构文件，登录账号单独授权；同步组织不等于自动开通系统权限。" actions={<button className="primary" onClick={()=>setEditing({id:nextUserId(),name:'',jobNo:'',roleId:'customer-agent',jobTitle:'客服专员',department:'河北基地',phone:'',email:'',status:'active',password:'',forceChangePassword:true,moduleOverrides:[],createdAt:new Date().toISOString().slice(0,10)})}><UserPlus size={16}/>新增登录账号</button>}/>
   {error&&<div className="workflow-error"><AlertTriangle size={16}/>{error}</div>}
-  <div className="admin-summary"><div><Users size={22}/><span>用户总数<strong>{users.length}</strong></span></div><div><CheckCircle2 size={22}/><span>正常账号<strong>{users.filter(u=>u.status==='active').length}</strong></span></div><div><UserRoundSearch size={22}/><span>资料待完善<strong>{incompleteCount}</strong></span></div><div><ShieldCheck size={22}/><span>角色数量<strong>{roles.length}</strong></span></div></div>
-  <section className="panel user-admin"><div className="admin-toolbar"><div className="admin-search"><Search size={16}/><input value={keyword} onChange={e=>setKeyword(e.target.value)} placeholder="搜索姓名、工号、岗位、部门"/></div><button className="secondary" onClick={()=>notify('岗位架构同步接口待连接企业人力主数据')}><RefreshCw size={15}/>同步岗位架构</button></div><div className="user-head"><span>用户</span><span>账号 / 联系方式</span><span>岗位与组织</span><span>角色</span><span>模块例外</span><span>状态</span><span>操作</span></div>{visible.map(u=>{const role=roles.find(r=>r.id===u.roleId);return <div className="user-row" key={u.id}><div className="user-person"><span>{u.name.slice(0,1)||'新'}</span><div><strong>{u.name}</strong><small>{u.id}</small></div></div><div className="account-info"><strong>{u.jobNo}</strong><small><Phone size={11}/>{u.phone||'未填写'}</small><small><Mail size={11}/>{u.email||'未填写'}</small></div><div><strong>{u.jobTitle}</strong><small>{u.department}</small></div><div><span className="role-tag">{role?.name||'未分配'}</span></div><div><strong>{u.moduleOverrides.length} 项</strong><small>{u.moduleOverrides.length?u.moduleOverrides.map(m=>menuCatalog.find(x=>x.id===m)?.label).join('、'):'继承角色权限'}</small></div><div><span className={`account-status ${u.status}`}>{u.status==='active'?'正常':'已停用'}</span>{(!u.phone||!u.email)&&<small className="profile-flag">资料待完善</small>}{u.forceChangePassword&&<small className="password-flag">待改密</small>}</div><div className="row-actions"><button disabled={busy} title="编辑" onClick={()=>setEditing({...u,password:''})}><Edit3 size={15}/></button><button disabled={busy} title="重置密码" onClick={()=>resetPassword(u)}><KeyRound size={15}/></button><button disabled={busy} title="停用/启用" onClick={()=>userAction(u.id,'toggle_status')}><LockKeyhole size={15}/></button></div></div>})}</section>
+  <div className="admin-summary"><div><Users size={22}/><span>组织人数<strong>{organization.source.totalMembers}</strong></span></div><div><Building2 size={22}/><span>项目/职能单元<strong>{organization.projects.length}</strong></span></div><div><CheckCircle2 size={22}/><span>正常账号<strong>{users.filter(u=>u.status==='active').length}</strong></span></div><div><ShieldCheck size={22}/><span>权限角色<strong>{roles.length}</strong></span></div></div>
+  {organization.members.length>0&&<OrganizationDirectoryPanel organization={organization}/>}
+  <section className="panel user-admin"><div className="admin-toolbar"><div><strong>登录账号</strong><small>仅下列账号可以登录系统，组织名录人员不会自动获得权限。</small></div><div className="admin-search"><Search size={16}/><input value={keyword} onChange={e=>setKeyword(e.target.value)} placeholder="搜索姓名、工号、岗位、部门"/></div></div><div className="user-head"><span>用户</span><span>账号 / 联系方式</span><span>岗位与组织</span><span>角色</span><span>模块例外</span><span>状态</span><span>操作</span></div>{visible.map(u=>{const role=roles.find(r=>r.id===u.roleId);return <div className="user-row" key={u.id}><div className="user-person"><span>{u.name.slice(0,1)||'新'}</span><div><strong>{u.name}</strong><small>{u.id}</small></div></div><div className="account-info"><strong>{u.jobNo}</strong><small><Phone size={11}/>{u.phone||'未填写'}</small><small><Mail size={11}/>{u.email||'未填写'}</small></div><div><strong>{u.jobTitle}</strong><small>{u.department}</small></div><div><span className="role-tag">{role?.name||'未分配'}</span></div><div><strong>{u.moduleOverrides.length} 项</strong><small>{u.moduleOverrides.length?u.moduleOverrides.map(m=>menuCatalog.find(x=>x.id===m)?.label).join('、'):'继承角色权限'}</small></div><div><span className={`account-status ${u.status}`}>{u.status==='active'?'正常':'已停用'}</span>{(!u.phone||!u.email)&&<small className="profile-flag">资料待完善</small>}{u.forceChangePassword&&<small className="password-flag">待改密</small>}</div><div className="row-actions"><button disabled={busy} title="编辑" onClick={()=>setEditing({...u,password:''})}><Edit3 size={15}/></button><button disabled={busy} title="重置密码" onClick={()=>resetPassword(u)}><KeyRound size={15}/></button><button disabled={busy} title="停用/启用" onClick={()=>userAction(u.id,'toggle_status')}><LockKeyhole size={15}/></button></div></div>})}</section>
   {editing&&<div className="modal-backdrop"><div className="admin-modal"><header><div><span>用户资料</span><h2>{users.some(u=>u.id===editing.id)?'编辑用户':'新增用户'}</h2></div><button disabled={busy} onClick={()=>setEditing(null)}><X size={19}/></button></header><div className="form-grid"><label><span>姓名 *</span><input value={editing.name} onChange={e=>setEditing({...editing,name:e.target.value})}/></label><label><span>工号 / 登录账号 *</span><input value={editing.jobNo} onChange={e=>setEditing({...editing,jobNo:e.target.value})}/></label><label><span>岗位 *</span><input value={editing.jobTitle} onChange={e=>setEditing({...editing,jobTitle:e.target.value})}/></label><label><span>所属组织 *</span><input value={editing.department} onChange={e=>setEditing({...editing,department:e.target.value})}/></label><label><span>手机号</span><input value={editing.phone} onChange={e=>setEditing({...editing,phone:e.target.value})}/></label><label><span>邮箱</span><input value={editing.email} onChange={e=>setEditing({...editing,email:e.target.value})}/></label><label><span>系统角色 *</span><select value={editing.roleId} onChange={e=>setEditing({...editing,roleId:e.target.value})}>{roles.filter(r=>r.status==='active').map(r=><option value={r.id} key={r.id}>{r.name}</option>)}</select></label><label><span>账号状态</span><select value={editing.status} onChange={e=>setEditing({...editing,status:e.target.value as 'active'|'disabled'})}><option value="active">正常</option><option value="disabled">停用</option></select></label><label className="password-field"><span>{users.some(u=>u.id===editing.id)?'新密码（可留空）':'初始密码 *'}</span><div><input type={showPassword?'text':'password'} value={editing.password||''} placeholder={users.some(u=>u.id===editing.id)?'留空表示不修改密码':'至少8位'} onChange={e=>setEditing({...editing,password:e.target.value})}/><button onClick={()=>setShowPassword(!showPassword)}>{showPassword?<EyeOff size={15}/>:<Eye size={15}/>}</button></div><small>密码仅提交服务端，并以 scrypt 加盐哈希保存，不会回显到浏览器。</small></label></div><div className="override-box"><div><strong>角色外模块配置</strong><small>这里的配置是对角色权限的额外补充，不会移除角色已有菜单。</small></div><div>{menuCatalog.map(m=><label key={m.id}><input type="checkbox" checked={editing.moduleOverrides.includes(m.id)} onChange={e=>setEditing({...editing,moduleOverrides:e.target.checked?[...editing.moduleOverrides,m.id]:editing.moduleOverrides.filter(x=>x!==m.id)})}/><span>{m.label}</span></label>)}</div></div><footer><button className="secondary" disabled={busy} onClick={()=>setEditing(null)}>取消</button><button className="primary" disabled={busy||!editing.name.trim()||!editing.jobNo.trim()||!editing.jobTitle.trim()||!editing.department.trim()||!editing.roleId||(!users.some(u=>u.id===editing.id)&&!(editing.password||'').trim())} onClick={()=>save(editing)}><Save size={15}/>{busy?'保存中…':'保存用户'}</button></footer></div></div>}
  </>
 }
 
-function RoleManagementPage({roles,saveRole,deleteRole,users,notify,busy,error}:{roles:SystemRole[];saveRole:(role:SystemRole)=>Promise<boolean>;deleteRole:(id:string)=>Promise<boolean>;users:SystemUser[];notify:(s:string)=>void;busy:boolean;error:string}){
+function RoleManagementPage({roles,saveRole,deleteRole,users,organization,notify,busy,error}:{roles:SystemRole[];saveRole:(role:SystemRole)=>Promise<boolean>;deleteRole:(id:string)=>Promise<boolean>;users:SystemUser[];organization:OrganizationDirectory;notify:(s:string)=>void;busy:boolean;error:string}){
  const [editing,setEditing]=useState<SystemRole|null>(null)
  const memberCount=(roleId:string)=>users.filter(user=>user.roleId===roleId).length
  const nextRoleId=(code:string)=>{
@@ -1335,7 +1401,7 @@ function RoleManagementPage({roles,saveRole,deleteRole,users,notify,busy,error}:
  }
  return <><PageHead eyebrow="系统管理 · RBAC" title="角色管理" desc="角色绑定左侧导航和数据范围；用户继承角色权限后，还可单独增加模块配置。" actions={<button className="primary" onClick={()=>setEditing({id:'new-role',name:'',code:'',level:'自定义',description:'',memberCount:0,menus:['command'],builtIn:false,status:'active'})}><Plus size={16}/>新增角色</button>}/>
   {error&&<div className="workflow-error"><AlertTriangle size={16}/>{error}</div>}
-  <div className="role-admin-grid">{roles.map(r=>{const assigned=memberCount(r.id);return <article className={`role-card ${r.status}`} key={r.id}><header><div className="role-emblem">{r.name.slice(0,1)}</div><div><span>{r.level}</span><h3>{r.name}</h3><small>{r.code}</small></div>{r.builtIn&&<em>内置</em>}</header><p>{r.description}</p><div className="role-stat"><span><Users size={14}/>{assigned} 名已配置用户</span><span><Menu size={14}/>{r.menus.length} 个菜单</span></div><div className="menu-chips">{r.menus.slice(0,5).map(m=><span key={m}>{menuCatalog.find(x=>x.id===m)?.label}</span>)}{r.menus.length>5&&<em>+{r.menus.length-5}</em>}</div><footer><button disabled={busy} onClick={()=>setEditing(r)}><Edit3 size={14}/>编辑权限</button><button className="danger" disabled={busy||r.builtIn} title={r.builtIn?'内置角色不可删除':assigned?'请先重新分配关联用户':'删除角色'} onClick={()=>remove(r)}><Trash2 size={14}/>删除</button></footer></article>})}</div>
+  <div className="role-admin-grid">{roles.map(r=>{const assigned=memberCount(r.id);const directoryCount=organization.roleStats.find(item=>item.id===r.id)?.count||0;return <article className={`role-card ${r.status}`} key={r.id}><header><div className="role-emblem">{r.name.slice(0,1)}</div><div><span>{r.level}</span><h3>{r.name}</h3><small>{r.code}</small></div>{r.builtIn&&<em>内置</em>}</header><p>{r.description}</p><div className="role-stat"><span><Users size={14}/>{directoryCount} 名组织成员 · {assigned} 个登录账号</span><span><Menu size={14}/>{r.menus.length} 个菜单</span></div><div className="menu-chips">{r.menus.slice(0,5).map(m=><span key={m}>{menuCatalog.find(x=>x.id===m)?.label}</span>)}{r.menus.length>5&&<em>+{r.menus.length-5}</em>}</div><footer><button disabled={busy} onClick={()=>setEditing(r)}><Edit3 size={14}/>编辑权限</button><button className="danger" disabled={busy||r.builtIn} title={r.builtIn?'内置角色不可删除':assigned?'请先重新分配关联用户':'删除角色'} onClick={()=>remove(r)}><Trash2 size={14}/>删除</button></footer></article>})}</div>
   {editing&&<div className="modal-backdrop"><div className="admin-modal role-modal"><header><div><span>角色与权限</span><h2>{editing.builtIn?'编辑内置角色':'配置角色'}</h2></div><button disabled={busy} onClick={()=>setEditing(null)}><X size={19}/></button></header><div className="form-grid"><label><span>角色名称 *</span><input value={editing.name} onChange={e=>setEditing({...editing,name:e.target.value})}/></label><label><span>角色编码 *</span><input disabled={editing.builtIn} value={editing.code} onChange={e=>setEditing({...editing,code:e.target.value.toUpperCase()})}/></label><label><span>权限层级</span><select value={editing.level} onChange={e=>setEditing({...editing,level:e.target.value})}>{['系统级','基地级','业务线级','区域级','班组级','个人级','专业岗','自定义'].map(x=><option key={x}>{x}</option>)}</select></label><label><span>角色状态</span><select value={editing.status} onChange={e=>setEditing({...editing,status:e.target.value as 'active'|'disabled'})}><option value="active">启用</option><option value="disabled">停用</option></select></label><label className="full"><span>角色说明</span><textarea value={editing.description} onChange={e=>setEditing({...editing,description:e.target.value})}/></label></div><div className="permission-tree"><header><div><strong>左侧菜单权限</strong><small>勾选后，该角色登录时显示对应抽屉入口。</small></div><button disabled={busy} onClick={()=>setEditing({...editing,menus:editing.menus.length===menuCatalog.length?[]:menuCatalog.map(m=>m.id)})}>{editing.menus.length===menuCatalog.length?'取消全选':'全选'}</button></header><div>{menuCatalog.map(m=><label key={m.id} className={m.id.includes('management')?'system-permission':''}><input type="checkbox" checked={editing.menus.includes(m.id)} onChange={e=>setEditing({...editing,menus:e.target.checked?[...editing.menus,m.id]:editing.menus.filter(x=>x!==m.id)})}/><span>{m.label}</span>{m.id.includes('management')&&<em>系统管理</em>}</label>)}</div></div><footer><button className="secondary" disabled={busy} onClick={()=>setEditing(null)}>取消</button><button className="primary" disabled={busy||!editing.name.trim()||!editing.code.trim()||!editing.menus.length} onClick={()=>save(editing)}><Save size={15}/>{busy?'保存中…':'保存角色'}</button></footer></div></div>}
  </>
 }

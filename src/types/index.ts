@@ -35,3 +35,25 @@ export interface SystemRole {
   builtIn: boolean
   status: 'active' | 'disabled'
 }
+
+export interface OrganizationMember {
+  jobNo: string
+  name: string
+  jobTitle: string
+  functionCategory: string
+  jobLevel: string
+  project: string
+  department: string
+  orgPath: string
+  team: string
+  roleId: string
+  roleName: string
+}
+
+export interface OrganizationDirectory {
+  version: number
+  source: { fileName:string; importedAt:string; scope:string; totalMembers:number; containsContactDetails:boolean }
+  projects: { id:string; name:string; count:number }[]
+  roleStats: { id:string; name:string; count:number }[]
+  members: OrganizationMember[]
+}

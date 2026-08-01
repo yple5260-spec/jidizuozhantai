@@ -6,6 +6,11 @@ export type LiveMetric={
 export type LiveMember={
  jobNo:string;name:string;team:string;leaderCode:string;supervisor:string;stage:string
  metrics:{responses:LiveMetric;cph:LiveMetric;satisfaction:LiveMetric;fcr:LiveMetric;busyRest:LiveMetric;repeatCall:LiveMetric}
+ productivityDrivers:{
+  formula:string;workHours:LiveMetric;utilization:LiveMetric;handleTime:LiveMetric;busyRest:LiveMetric
+  talkSeconds:number|null;totalWorkSeconds:number|null;calculatedActualResponses:number|null;calculatedTargetResponses:number|null
+  sourceImpacts:{workHours:number|null;utilization:number|null;talkTime:number|null;afterCall:number|null;busyRest:number|null}
+ }
  monthly:{responses:LiveMetric;cph:LiveMetric;satisfaction:LiveMetric;fcr:LiveMetric}
  marketing:{valid:number;broadband:number;volume:number}
  flags:{potential:boolean;focus:boolean};summary:string;dataDate:string

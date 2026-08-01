@@ -12,9 +12,10 @@ import { createSession, destroySession, publicSession, requireReadySession, requ
 import { databaseClose,databaseConfigured,databaseHealth,databaseTarget } from './database.js'
 import { buildLiveReportPreview,getRealData,getTaskMetricTrend } from './realDataRepository.js'
 import { migrateBusinessSchema } from './migrate.js'
-import { initializeStatePersistence,loadState,resetState,saveState,statePersistenceMode } from './statePersistence.js'
-import { aiHistory,appendAiExchange,claimScheduledBatch,clearAiHistory,deleteTaskAttachment,finishScheduledBatch,loadTaskAttachment,markNotificationRead,notificationReadIds,saveTaskAttachment } from './runtimeRepository.js'
+import { initializeStatePersistence,loadState,resetState,saveSnapshotOnlyState,saveState,saveTaskActionState,statePersistenceMode } from './statePersistence.js'
+import { aiHistory,appendAiExchange,applyRuntimeRetention,claimScheduledBatch,clearAiHistory,deleteTaskAttachment,finishScheduledBatch,loadTaskAttachment,markNotificationRead,notificationReadIds,saveTaskAttachment } from './runtimeRepository.js'
 import { completeTaskNode,improvementSummary,normalizeLeanTask,systemTargetSuggestion } from './leanPdca.js'
+import { startTaskOutboxWorker,stopTaskOutboxWorker } from './taskOutbox.js'
 import { API_VERSION } from './version.js'
 
 const PORT=process.env.API_PORT||process.env.PORT||4174
@@ -27,7 +28,7 @@ const reset=resetState
 const instanceId=process.env.INSTANCE_ID||randomUUID()
 const reportPreview=base=>String(process.env.DATABASE_URL||'').trim()?buildLiveReportPreview(base):Promise.resolve(base)
 const roles={leader:'客服班长',supervisor:'客服主管',manager:'客服经理',director:'运营总监',quality:'质检专员',employee:'客服专员',training:'培训主管',hrbp:'HRBP经理'}
-const runtimeRoleByAccessRole={'system-admin':'director','operation-director':'director','customer-manager':'manager','customer-supervisor':'supervisor','team-leader':'leader','customer-agent':'employee','quality-specialist':'quality','training-manager':'training','hrbp-manager':'hrbp'}
+const runtimeRoleByAccessRole={'system-admin':'director','operation-director':'director','customer-manager':'manager','customer-supervisor':'supervisor','team-leader':'leader','customer-agent':'employee','quality-specialist':'quality','training-manager':'training','hrbp-manager':'hrbp','operations-support':'employee'}
 const aiVerificationRole={employee:'leader',leader:'supervisor',supervisor:'manager',manager:'director',director:'director',quality:'manager',training:'manager',hrbp:'manager'}
 const json=(res,status,data)=>{res.writeHead(status,{'content-type':'application/json; charset=utf-8',...(CORS_ORIGIN?{'access-control-allow-origin':CORS_ORIGIN,'access-control-allow-credentials':'true','vary':'origin'}:{}),'access-control-allow-headers':'content-type','access-control-allow-methods':'GET,POST,PUT,DELETE,OPTIONS'});res.end(JSON.stringify(data))}
 const body=async req=>{
@@ -59,12 +60,13 @@ const requireRuntimeRole=(req,requestedRole,allowedRoles=Object.keys(roles))=>{
 const taskVisibleToRole=(task,role)=>{
  if(role==='director')return true
  if(role==='manager')return true
- if(role==='supervisor')return task.ownerRole==='supervisor'||task.ownerRole==='leader'||task.originRole==='supervisor'||task.verificationRole==='supervisor'
- if(role==='leader')return task.ownerRole==='leader'||task.originRole==='leader'||task.verificationRole==='leader'
- if(role==='employee')return task.ownerRole==='employee'||task.originRole==='employee'||task.verificationRole==='employee'
- if(role==='quality')return task.ownerRole==='quality'||task.originRole==='quality'||task.verificationRole==='quality'
- if(role==='training')return task.ownerRole==='training'||task.originRole==='training'||task.verificationRole==='training'
- if(role==='hrbp')return task.ownerRole==='hrbp'||task.originRole==='hrbp'||task.verificationRole==='hrbp'
+ const related=task.ownerRole===role||task.originRole===role||task.initiatorRole===role||task.executionOwnerRole===role||task.verificationRole===role
+ if(role==='supervisor')return related||task.ownerRole==='leader'||task.executionOwnerRole==='leader'
+ if(role==='leader')return related
+ if(role==='employee')return related
+ if(role==='quality')return related
+ if(role==='training')return related
+ if(role==='hrbp')return related
  return false
 }
 const directiveTargets={
@@ -72,7 +74,25 @@ const directiveTargets={
  manager:['supervisor','leader','employee','quality','training','hrbp'],
  supervisor:['leader','employee'],
 }
+const requestTargets={
+ employee:['leader','quality','training','hrbp'],
+ leader:['employee','supervisor','quality','training','hrbp'],
+ supervisor:['manager','leader','employee','quality','training','hrbp'],
+ quality:['leader','supervisor','manager','training'],
+ training:['leader','supervisor','manager','quality'],
+ hrbp:['leader','supervisor','manager'],
+ manager:['director','supervisor','leader','employee','quality','training','hrbp'],
+ director:['manager','supervisor','leader','employee','quality','training','hrbp'],
+}
 const compactOrgText=value=>String(value||'').replace(/\s+/g,'')
+const sameOperationArea=(left,right)=>{
+ const a=compactOrgText(left),b=compactOrgText(right)
+ if(!a||!b)return false
+ if(a.includes(b)||b.includes(a))return true
+ const area=value=>value.match(/(?:普通客服|增值客服|投诉客服)[一二三四五六七八九十\d]*区/)?.[0]||''
+ const leftArea=area(a),rightArea=area(b)
+ return Boolean(leftArea&&rightArea&&leftArea===rightArea)
+}
 const visibleWorkforce=(workforce,current,role)=>{
  const source=structuredClone(workforce||{employees:[],coverage:[],shifts:[],requests:[]})
  if(['director','manager','supervisor','hrbp'].includes(role))return source
@@ -141,7 +161,7 @@ const visibleLearning=(learning,current,role)=>{
  if(role==='leader'){
   const department=compactOrgText(current.user.department)
   const inScope=item=>item.leader===current.user.name||department.includes(compactOrgText(item.team))
-  const developmentCases=source.developmentCases.filter(item=>item.initiatorRole==='leader'||item.responderRole==='leader'||department.includes(compactOrgText(item.team)))
+  const developmentCases=source.developmentCases.filter(item=>item.initiatorRole==='leader'||item.responderRole==='leader'||sameOperationArea(department,item.team))
   return {...source,assignments:source.assignments.filter(inScope),suggestions:source.suggestions.filter(item=>department.includes(compactOrgText(item.team))),growthReviews:source.growthReviews.filter(inScope),developmentCases}
  }
  if(role==='employee'){
@@ -151,7 +171,7 @@ const visibleLearning=(learning,current,role)=>{
  }
  if(['quality','hrbp','supervisor'].includes(role)){
   const department=compactOrgText(current.user.department)
-  const developmentCases=source.developmentCases.filter(item=>item.initiatorRole===role||item.responderRole===role||department.includes(compactOrgText(item.team)))
+  const developmentCases=source.developmentCases.filter(item=>item.initiatorRole===role||item.responderRole===role||sameOperationArea(department,item.team))
   return {...empty,questionBanks:role==='quality'?source.questionBanks.filter(item=>item.status==='published'):[],sessions:role==='quality'?source.sessions.filter(item=>item.status==='completed'):[],developmentCases}
  }
  return empty
@@ -165,6 +185,28 @@ const visibleGovernance=(governance,current,role)=>{
  if(role==='supervisor')return {...empty,shiftPlans:source.shiftPlans,skillRoutes:source.skillRoutes,meetings:publishedMeetings,crossDepartmentItems:source.crossDepartmentItems.filter(item=>item.targetRole==='supervisor')}
  if(['hrbp','quality','training'].includes(role))return {...empty,meetings:publishedMeetings,crossDepartmentItems:source.crossDepartmentItems.filter(item=>item.targetRole===role)}
  return {...empty,meetings:publishedMeetings}
+}
+const visibleExcellence=(excellence,role)=>{
+ const empty={version:1,evaluation:{period:'',topPercent:20,rule:'',minimumEvidenceTasks:2},employeeAchievements:[],experiences:[],recordings:[],phrases:[]}
+ const source=structuredClone(excellence||empty)
+ return ['director','manager','supervisor','leader','employee','quality','training'].includes(role)?source:empty
+}
+const visibleFinancialPerformance=(financialPerformance,role)=>{
+ if(['director','manager'].includes(role))return structuredClone(financialPerformance)
+ return {version:1,scope:'',asOf:'',months:[],budgetMonths:[],sources:{budget:{fileName:'',section:'',period:''},actual:{fileName:'',section:'',period:''}},dataQuality:{status:'restricted',message:'当前岗位不开放经营预算数据'},metrics:[],recoveryPlan:[]}
+}
+const visibleMorningBriefings=(morningBriefings,current,role)=>{
+ const empty={version:1,teams:[],schedules:[],suggestions:[],todayBulletin:morningBriefings?.todayBulletin||{date:'',title:'',points:[],targets:[],businessUpdate:''}}
+ const source=structuredClone(morningBriefings||empty)
+ if(['director','manager','supervisor'].includes(role))return source
+ if(role==='leader'){
+  const department=compactOrgText(current.user.department)
+  const schedules=source.schedules.filter(item=>department.includes(compactOrgText(item.team))||item.leader===current.user.name)
+  return {...empty,teams:source.teams.filter(item=>department.includes(compactOrgText(item.team))||item.leader===current.user.name),schedules}
+ }
+ if(role==='employee')return {...empty,schedules:source.schedules.filter(item=>item.date===source.todayBulletin.date&&item.status!=='draft')}
+ if(['quality','training'].includes(role))return {...empty,teams:source.teams,schedules:source.schedules.filter(item=>item.status!=='draft'),suggestions:source.suggestions.filter(item=>item.sourceRole===role)}
+ return empty
 }
 const visibleBusinessState=(state,current)=>{
  if(current.user.roleId==='system-admin')return state
@@ -183,13 +225,48 @@ const visibleBusinessState=(state,current)=>{
  visible.people=visiblePeople(visible.people,current,role)
  visible.learning=visibleLearning(visible.learning,current,role)
  visible.governance=visibleGovernance(visible.governance,current,role)
+ visible.excellence=visibleExcellence(visible.excellence,role)
+ visible.financialPerformance=visibleFinancialPerformance(visible.financialPerformance,role)
+ visible.morningBriefings=visibleMorningBriefings(visible.morningBriefings,current,role)
  visible.reportRuns=[]
  visible.reportDownloads=[]
  visible.audit=[]
  visible.workforce=visibleWorkforce(visible.workforce,current,role)
  return visible
 }
-const stateJson=(res,status,state,current)=>json(res,status,visibleBusinessState(state,current))
+const withTaskSla=state=>{
+ const currentTime=Date.now(),next=structuredClone(state)
+ for(const task of next.tasks||[]){
+  if(task.workflowKind!=='lean_directive'){task.slaStatus='not_applicable';continue}
+  if(task.archivedAt){task.slaStatus='archived';continue}
+  if(task.status==='closed'){task.slaStatus='closed';continue}
+  const followUpAt=Date.parse(String(task.nextFollowUpAt||''))
+  const verificationAt=Date.parse(String(task.verificationDueAt||''))
+  const submitAt=Date.parse(String(task.submitDueAt||task.dueAt||''))
+  const deadline=task.status==='pending_verification'?verificationAt:submitAt
+  task.slaStatus=Number.isFinite(followUpAt)&&followUpAt<=currentTime?'follow_up_due'
+   :Number.isFinite(deadline)&&deadline<=currentTime?(task.status==='pending_verification'?'overdue_verification':'overdue_execution')
+   :Number.isFinite(deadline)&&deadline-currentTime<=4*60*60*1000?'due_soon':'on_track'
+  task.slaDeadline=Number.isFinite(deadline)?new Date(deadline).toISOString():''
+ }
+ return next
+}
+const stateJson=(res,status,state,current)=>json(res,status,visibleBusinessState(withTaskSla(state),current))
+const taskActionJson=(res,status,state,current,taskId,newNoticeIds)=>{
+ const visible=visibleBusinessState(withTaskSla(state),current)
+ const task=visible.tasks.find(item=>item.id===taskId)
+ const event=task?.eventId?visible.events.find(item=>item.id===task.eventId):null
+ const notifications=visible.notifications.filter(item=>newNoticeIds.has(item.id))
+ return json(res,status,{
+  patchType:'task_action',
+  persistenceRevision:visible.persistenceRevision,
+  task:task||null,
+  tasks:task?[task]:[],
+  event:event||null,
+  events:event?[event]:[],
+  notifications,
+ })
+}
 const safeText=(value,max=500)=>String(value||'').trim().slice(0,max)
 const cleanChatMessages=messages=>{
  if(!Array.isArray(messages))return []
@@ -275,12 +352,66 @@ const requestDeepSeek=async({config,messages,context,maxTokens=1000,systemPrompt
  }finally{clearTimeout(timeout)}
 }
 
+const finiteNumber=value=>{
+ if(value==null||value==='')return null
+ const parsed=Number(value)
+ return Number.isFinite(parsed)?parsed:null
+}
+const attributionRound=(value,digits=2)=>value==null?null:Number(value.toFixed(digits))
+const productivityByFormula=(hours,utilization,handleTime)=>hours!=null&&utilization!=null&&handleTime>0
+ ?hours*3600*(utilization/100)/handleTime:null
+const buildProductivityAttribution=input=>{
+ const responseActual=finiteNumber(input?.responses?.actual),responseTarget=finiteNumber(input?.responses?.target)
+ const workActual=finiteNumber(input?.workHours?.actual),workTarget=finiteNumber(input?.workHours?.target)
+ const utilizationActual=finiteNumber(input?.utilization?.actual),utilizationTarget=finiteNumber(input?.utilization?.target)
+ const handleActual=finiteNumber(input?.handleTime?.actual),handleTarget=finiteNumber(input?.handleTime?.target)
+ const busyActual=finiteNumber(input?.busyRest?.actual),busyTarget=finiteNumber(input?.busyRest?.target)
+ const targetFormula=productivityByFormula(workTarget,utilizationTarget,handleTarget)
+ const afterWork=productivityByFormula(workActual,utilizationTarget,handleTarget)
+ const afterUtilization=productivityByFormula(workActual,utilizationActual,handleTarget)
+ const actualFormula=productivityByFormula(workActual,utilizationActual,handleActual)
+ const sourceImpacts=input?.sourceImpacts||{}
+ const handleSourceImpacts=[finiteNumber(sourceImpacts.talkTime),finiteNumber(sourceImpacts.afterCall)].filter(value=>value!=null)
+ const drivers=[
+  {code:'work_hours',label:'签入工时',actual:workActual,target:workTarget,unit:'h',direction:'higher',impactCalls:targetFormula!=null&&afterWork!=null?afterWork-targetFormula:finiteNumber(sourceImpacts.workHours),evidence:'实际签入工时与个人目标工时的差值'},
+  {code:'utilization',label:'员工利用率',actual:utilizationActual,target:utilizationTarget,unit:'%',direction:'higher',impactCalls:afterWork!=null&&afterUtilization!=null?afterUtilization-afterWork:finiteNumber(sourceImpacts.utilization),evidence:'通话总时长 ÷ 总工作时长'},
+  {code:'handle_time',label:'通话均长',actual:handleActual,target:handleTarget,unit:'s',direction:'lower',impactCalls:afterUtilization!=null&&actualFormula!=null?actualFormula-afterUtilization:handleSourceImpacts.length?handleSourceImpacts.reduce((sum,value)=>sum+value,0):null,evidence:'AHT包含通话与话后整理对产能的共同影响'},
+  {code:'busy_rest',label:'示忙小休率',actual:busyActual,target:busyTarget,unit:'%',direction:'lower',impactCalls:finiteNumber(sourceImpacts.busyRest),evidence:'作为利用率损失的过程原因单独展示，不与利用率影响重复汇总'},
+ ].map(driver=>{
+  const comparable=driver.actual!=null&&driver.target!=null
+  const gap=comparable?driver.actual-driver.target:null
+  const adverse=comparable&&(driver.direction==='lower'?driver.actual>driver.target:driver.actual<driver.target)
+  return {...driver,gap:attributionRound(gap),impactCalls:attributionRound(driver.impactCalls),status:!comparable?'unknown':adverse?'risk':'met'}
+ })
+ const ranked=drivers.filter(driver=>driver.status==='risk').sort((left,right)=>(left.impactCalls??0)-(right.impactCalls??0))
+ const primary=ranked[0]
+ const formulaGap=targetFormula!=null&&actualFormula!=null?actualFormula-targetFormula:null
+ const responseGap=responseActual!=null&&responseTarget!=null?responseActual-responseTarget:null
+ const recommendations=ranked.slice(0,3).map(driver=>driver.code==='work_hours'
+  ?`补齐签入工时至${driver.target}${driver.unit}，逐小时检查迟签、早退和离席时段。`
+  :driver.code==='utilization'
+   ?`将员工利用率提升至${driver.target}${driver.unit}，重点压降等待、示忙和非必要离席。`
+   :driver.code==='handle_time'
+    ?`将通话均长控制至${driver.target}${driver.unit}以内，拆分通话与话后整理定位超长环节。`
+    :`将示忙小休率压降至${driver.target}${driver.unit}以内，核对高峰时段小休和示忙原因。`)
+ return {
+  employee:{jobNo:safeText(input?.jobNo,40),name:safeText(input?.name,40),team:safeText(input?.team,100)},
+  formula:'目标产能 = 目标工时 × 3600 × 目标员工利用率 ÷ 目标通话均长',
+  utilizationFormula:'员工利用率 = 通话总时长 ÷ 总工作时长',
+  calculation:{responseActual,responseTarget,responseGap:attributionRound(responseGap),formulaActual:attributionRound(actualFormula),formulaTarget:attributionRound(targetFormula),formulaGap:attributionRound(formulaGap)},
+  drivers,
+  conclusion:responseGap==null?'当前应答量或目标值不完整，先补齐口径后再确认产能Gap。':responseGap>=0?'当前产能已达到个人目标，建议继续观察过程指标稳定性。':primary?`产能Gap ${Math.abs(attributionRound(responseGap)||0)}通，首要负向因素为${primary.label}，其实际${primary.actual}${primary.unit}、目标${primary.target}${primary.unit}。`:`产能Gap ${Math.abs(attributionRound(responseGap)||0)}通，但现有底层驱动数据未识别出单一负向因素，需核对排队量、业务结构和数据口径。`,
+  recommendations:recommendations.length?recommendations:['核对应答量、工时、利用率和通话均长的数据口径后，再形成改善动作。'],
+ }
+}
+
 const startupDatabase=await databaseHealth()
 if(databaseConfigured()&&!startupDatabase.connected)throw new Error(`数据库连接失败：${startupDatabase.target} (${startupDatabase.error})`)
 let startupMigrations=[]
 if(startupDatabase.connected&&process.env.AUTO_MIGRATE!=='false')startupMigrations=await migrateBusinessSchema()
 const accessPersistence=await initializeAccessPersistence()
 const statePersistence=await initializeStatePersistence()
+await applyRuntimeRetention()
 
 const server=http.createServer(async(req,res)=>{
  if(req.method==='OPTIONS') return json(res,204,{})
@@ -328,6 +459,25 @@ const server=http.createServer(async(req,res)=>{
    const result=await requestDeepSeek({config,messages,context:p.context})
    await appendAiExchange({userId:current.user.id,role,userMessage:messages.at(-1).content,assistantMessage:result.content,model:result.model,usage:result.usage,context:p.context})
    return json(res,200,{message:{role:'assistant',content:result.content},provider:'DeepSeek',model:result.model,usage:result.usage})
+  }
+  if(req.method==='POST'&&url.pathname==='/api/ai/team-attribution'){
+   const current=requireReadySession(req),p=await body(req),role=authorizeRuntimeRole(current,p.role)
+   if(!['leader','supervisor','manager','director'].includes(role))return json(res,403,{error:'当前岗位无班组归因分析权限',code:'ATTRIBUTION_FORBIDDEN'})
+   const analysis=buildProductivityAttribution(p.member)
+   const config=getAiConfig()
+   if(!config.apiKey)return json(res,200,{...analysis,provider:'system',model:'call-center-productivity-rules',aiNarrative:`${analysis.conclusion}${analysis.recommendations.join('')}`})
+   try{
+    const result=await requestDeepSeek({
+     config,maxTokens:650,
+     context:{role:roles[role],scope:analysis.employee.team||'所属班组',page:'班组看数归因分析'},
+     systemPrompt:`你是呼叫中心精益运营分析师。请基于系统已经完成的产能桥接计算，输出简洁、可执行的中文归因结论。
+必须遵守：不得修改计算结果；不得虚构缺失数据；区分直接产能因子与过程因子；先讲首要原因，再讲证据、联动原因和改善动作；控制在220字以内。`,
+     messages:[{role:'user',content:JSON.stringify(analysis)}],
+    })
+    return json(res,200,{...analysis,provider:'DeepSeek',model:result.model,aiNarrative:result.content})
+   }catch(error){
+    return json(res,200,{...analysis,provider:'system',model:'call-center-productivity-rules',warning:`大模型归因暂不可用，已使用系统规则：${error.code||'AI_UNAVAILABLE'}`,aiNarrative:`${analysis.conclusion}${analysis.recommendations.join('')}`})
+   }
   }
   if(req.method==='POST'&&url.pathname==='/api/ai/action-drafts'){
    const current=requireReadySession(req),config=getAiConfig(),p=await body(req)
@@ -445,6 +595,46 @@ const server=http.createServer(async(req,res)=>{
   if(req.method==='GET'&&url.pathname==='/api/state'){
    const current=requireReadySession(req)
    return stateJson(res,200,load(),current)
+  }
+  if(req.method==='GET'&&url.pathname==='/api/excellence/matches'){
+   const current=requireReadySession(req);requirePermission(current.access,current.user.id,'excellence')
+   const s=load(),taskId=safeText(url.searchParams.get('taskId'),100)
+   const task=s.tasks.find(item=>item.id===taskId)
+   const query=safeText(url.searchParams.get('query')||[task?.title,task?.type,task?.problem,task?.target,task?.issueCategory].filter(Boolean).join(' '),1200).toLowerCase()
+   const matches=s.excellence.experiences.filter(item=>item.aiPublished).map(item=>{
+    const hits=item.keywords.filter(keyword=>query.includes(String(keyword).toLowerCase()))
+    const categoryHit=query.includes(String(item.category).toLowerCase())
+    const score=Math.min(99,52+hits.length*12+(categoryHit?10:0))
+    return {...item,matchScore:score,matchedKeywords:hits}
+   }).filter(item=>item.matchedKeywords.length||query.includes(String(item.category).toLowerCase())).sort((a,b)=>b.matchScore-a.matchScore)
+   return json(res,200,{taskId:task?.id||'',query,matches})
+  }
+  let excellenceMatch=url.pathname.match(/^\/api\/excellence\/experiences\/([^/]+)\/action$/)
+  if(req.method==='POST'&&excellenceMatch){
+   const p=await body(req),{current,role,actor}=requireRuntimeRole(req,p.role,['director','manager','supervisor','quality','training'])
+   requirePermission(current.access,current.user.id,'excellence')
+   const s=load(),record=s.excellence.experiences.find(item=>item.id===excellenceMatch[1])
+   if(!record)return json(res,404,{error:'优秀经验不存在'})
+   const action=safeText(p.action,30)
+   if(!['publish_ai','withdraw_ai'].includes(action))return json(res,400,{error:'不支持的经验库动作'})
+   if(action==='publish_ai'){
+    const targetMet=record.direction==='lower'?record.actual<=record.target:record.actual>=record.target
+    if(!targetMet||!record.sourceTaskId||record.steps.length<2||record.evidence.length<1)return json(res,409,{error:'只有量化目标达成、关联来源任务且具备步骤与证据的经验才能发布给AI'})
+    record.aiPublished=true;record.publishedAt=now()
+   }else{record.aiPublished=false;record.publishedAt=''}
+   audit(s,actor,`${record.id}：${action==='publish_ai'?'发布至AI经验库':'从AI经验库撤回'}（${roles[role]}）`);await save(s);return stateJson(res,200,s,current)
+  }
+  if(req.method==='POST'&&url.pathname==='/api/excellence/recordings'){
+   const p=await body(req),{current,actor}=requireRuntimeRole(req,p.role,['quality']);requirePermission(current.access,current.user.id,'excellence')
+   const s=load(),title=safeText(p.title,100),callId=safeText(p.callId,100),employeeName=safeText(p.employeeName,60),team=safeText(p.team,100),business=safeText(p.business,80),notes=safeText(p.notes,1600)
+   const qualityScore=Number(p.qualityScore),targetScore=Number(p.targetScore||95),durationSeconds=Math.round(Number(p.durationSeconds))
+   if(!title||!callId||!employeeName||!team||!business||notes.length<10||!Number.isFinite(qualityScore)||qualityScore<0||qualityScore>100||!Number.isFinite(durationSeconds)||durationSeconds<30)return json(res,400,{error:'请完整填写录音、员工、业务、时长、质检分和至少10字亮点说明'})
+   if(qualityScore<targetScore)return json(res,409,{error:'录音质检分未达到先进录音目标线，不能入库'})
+   const id=`REC-${Date.now()}`,phraseText=safeText(p.phrase,240),phraseId=phraseText?`PHR-${Date.now()}`:''
+   const recording={id,title,callId,employeeJobNo:safeText(p.employeeJobNo,40),employeeName,team,business,durationSeconds,qualityScore,targetScore,submittedBy:actor,submittedAt:now(),aiSummary:`AI提炼：${notes}`,highlights:[notes],phraseIds:phraseId?[phraseId]:[],aiPublished:Boolean(p.aiPublished)}
+   s.excellence.recordings.unshift(recording)
+   if(phraseId)s.excellence.phrases.unshift({id:phraseId,text:phraseText,scenario:business,sourceRecordingId:id,employeeName,qualityScore,tags:[business,'质检提炼'],useCount:0})
+   audit(s,actor,`提交先进录音${id}，质检${qualityScore}分/目标${targetScore}分`);await save(s);return stateJson(res,201,s,current)
   }
   if(req.method==='GET'&&url.pathname==='/api/real-data'){
    const current=requireReadySession(req)
@@ -662,25 +852,27 @@ const server=http.createServer(async(req,res)=>{
    audit(s,actor,`${review.id}：${review.history[0].action}`);await save(s);return stateJson(res,200,s,current)
   }
   if(req.method==='POST'&&url.pathname==='/api/development/cases'){
-   const p=await body(req),{current,role,actor}=requireRuntimeRole(req,p.role,['employee','leader','supervisor','quality','training','hrbp'])
+   const p=await body(req),{current,role,actor}=requireRuntimeRole(req,p.role,['leader','quality','training'])
    const s=load(),type=safeText(p.type,20),title=safeText(p.title,100),reason=safeText(p.reason,1200),goal=safeText(p.goal,1200)
-   const responderRole=safeText(p.responderRole,30),dueAt=new Date(p.dueAt)
-   if(!['training','interview'].includes(type)||!title||reason.length<10||goal.length<10)return json(res,400,{error:'请完整填写任务类型、标题、至少10字的发起原因和目标'})
-   if(!Number.isFinite(dueAt.getTime())||dueAt.getTime()<=Date.now())return json(res,400,{error:'完成时限必须晚于当前时间'})
+   const responderRole=safeText(p.responderRole,30),actionPlan=safeText(p.actionPlan,1200),successCriteria=safeText(p.successCriteria,1200)
+   const plannedAt=new Date(p.plannedAt),dueAt=new Date(p.dueAt),verificationDueAt=new Date(p.verificationDueAt)
+   if(!['training','interview'].includes(type)||!title||reason.length<10||goal.length<5||actionPlan.length<10||successCriteria.length<10)return json(res,400,{error:'请完整填写任务类型、标题、问题、目标、行动计划和验收标准'})
+   if(![plannedAt,dueAt,verificationDueAt].every(item=>Number.isFinite(item.getTime())))return json(res,400,{error:'请完整设置计划开始、员工提交和发起人验收时间'})
+   if(plannedAt.getTime()>dueAt.getTime()||dueAt.getTime()>verificationDueAt.getTime())return json(res,400,{error:'计划开始、员工提交和发起人验收时间必须依次递增'})
+   if(verificationDueAt.getTime()<=Date.now())return json(res,400,{error:'验收时限必须晚于当前时间'})
    const employee=s.workforce.employees.find(item=>item.jobNo===p.employeeId||item.id===p.employeeId)
    if(!employee||employee.role!=='employee')return json(res,404,{error:'未找到对应客服专员'})
-   if(role==='employee'){
-    if(current.user.roleId!=='system-admin'&&employee.jobNo!==current.user.jobNo&&employee.name!==current.user.name)return json(res,403,{error:'客服专员只能为本人发起需求'})
-    if(!['leader','supervisor','quality','training','hrbp'].includes(responderRole))return json(res,400,{error:'请选择班长、主管、质检、培训或HRBP作为责任岗位'})
-   }else if(responderRole!=='employee')return json(res,400,{error:'管理岗位发起的培训或面谈需由客服专员本人反馈结果'})
+   if(responderRole!=='employee')return json(res,400,{error:'培训与面谈任务必须由客服专员本人接收并反馈结果'})
    if(s.learning.developmentCases.some(item=>item.employeeId===employee.jobNo&&item.title===title&&item.status!=='closed'))return json(res,409,{error:'该员工已有相同标题的处理中任务'})
    const day=new Date().toISOString().slice(0,10).replaceAll('-',''),sequence=String(s.learning.developmentCases.filter(item=>item.id.startsWith(`DV-${day}-`)).length+1).padStart(3,'0')
-   const initiatorName=current.user.roleId==='system-admin'?(role==='employee'?employee.name:roles[role]):actor
-   const responderName=responderRole==='employee'?employee.name:responderRole==='leader'?employee.leader:roles[responderRole]
+   const initiatorName=current.user.roleId==='system-admin'?roles[role]:actor
+   const responderName=employee.name
    const record={
     id:`DV-${day}-${sequence}`,type,title,reason,goal,employeeId:employee.jobNo,employeeName:employee.name,team:employee.team,
     initiatorRole:role,initiatorName,responderRole,responderName,ownerRole:responderRole,verificationRole:role,
-    status:'pending_acceptance',dueAt:dueAt.toISOString(),createdAt:now(),acknowledgement:'',result:'',verificationComment:'',
+    status:'pending_acceptance',plannedAt:plannedAt.toISOString(),dueAt:dueAt.toISOString(),verificationDueAt:verificationDueAt.toISOString(),
+    actionPlan,successCriteria,createdAt:now(),startedAt:'',submittedAt:'',closedAt:'',
+    acknowledgement:'',result:'',verificationComment:'',comments:[],
     history:[{at:now(),actor:initiatorName,action:`发起${type==='training'?'培训':'面谈'}${role==='employee'?'需求':'任务'}，指定${responderName}接收并反馈结果`}],
    }
    s.learning.developmentCases.unshift(record)
@@ -698,18 +890,18 @@ const server=http.createServer(async(req,res)=>{
    if(comment.length<5)return json(res,400,{error:'处理说明至少需要5个字'})
    if(action==='accept'){
     if(record.status!=='pending_acceptance'||record.ownerRole!==role)return json(res,409,{error:'仅当前责任岗位可以接收待回执任务'})
-    record.status='in_progress';record.acknowledgement=comment
+    record.status='in_progress';record.acknowledgement=comment;record.startedAt=now()
     record.history.unshift({at:now(),actor:actionActor,action:`接收任务并回执：${comment}`})
     addNotice(s,record.initiatorRole,`${record.title}已被接收`,`${actionActor}：${comment}`,'growth','normal')
    }else if(action==='submit'){
     if(!['in_progress','returned'].includes(record.status)||record.ownerRole!==role)return json(res,409,{error:'仅当前责任岗位可以提交执行结果'})
     if(comment.length<10)return json(res,400,{error:'结果反馈至少需要10个字'})
-    record.status='pending_verification';record.ownerRole=record.verificationRole;record.result=comment
+    record.status='pending_verification';record.ownerRole=record.verificationRole;record.result=comment;record.submittedAt=now()
     record.history.unshift({at:now(),actor:actionActor,action:`提交结果，等待发起人验收：${comment}`})
     addNotice(s,record.verificationRole,`${record.title}待发起人验收`,`${actor}已提交结果，请按“谁发起谁验收”完成确认。`,'growth','high')
    }else if(action==='verify_success'){
     if(record.status!=='pending_verification'||record.verificationRole!==role)return json(res,409,{error:'仅任务发起岗位可以验收'})
-    record.status='closed';record.ownerRole=role;record.verificationComment=comment
+    record.status='closed';record.ownerRole=role;record.verificationComment=comment;record.closedAt=now()
     record.history.unshift({at:now(),actor:actionActor,action:`发起人验收通过并关闭：${comment}`})
     addNotice(s,record.responderRole,`${record.title}已验收关闭`,`${actionActor}：${comment}`,'growth','normal')
    }else if(action==='verify_return'){
@@ -719,6 +911,28 @@ const server=http.createServer(async(req,res)=>{
     addNotice(s,record.responderRole,`${record.title}验收退回`,comment,'growth','high')
    }else return json(res,400,{error:'不支持的培训面谈任务动作'})
    audit(s,actionActor,`${record.id}：${record.history[0].action}`);await save(s);return stateJson(res,200,s,current)
+  }
+  const developmentCommentMatch=url.pathname.match(/^\/api\/development\/cases\/([^/]+)\/comments$/)
+  if(req.method==='POST'&&developmentCommentMatch){
+   const p=await body(req),{current,role,actor}=requireRuntimeRole(req,p.role,['supervisor','manager','director'])
+   const s=load(),record=s.learning.developmentCases.find(item=>item.id===developmentCommentMatch[1])
+   if(!record)return json(res,404,{error:'培训或面谈任务不存在'})
+   if(role==='supervisor'&&current.user.roleId!=='system-admin'){
+    if(!sameOperationArea(current.user.department,record.team))return json(res,403,{error:'客服主管只能评论所属组织内的培训与面谈任务'})
+   }
+   const nodeCode=safeText(p.nodeCode,20),comment=safeText(p.comment,800)
+   const nodeNames={plan:'目标设定',execute:'员工执行',verify:'发起人验收',close:'闭环固化'}
+   if(!nodeNames[nodeCode])return json(res,400,{error:'请选择需要评论的任务节点'})
+   if(comment.length<5)return json(res,400,{error:'管理评论至少需要5个字'})
+   const actionActor=current.user.roleId==='system-admin'?roles[role]:actor
+   record.comments=Array.isArray(record.comments)?record.comments:[]
+   const item={id:`DVC-${Date.now()}-${Math.random().toString(36).slice(2,6)}`,nodeCode,nodeName:nodeNames[nodeCode],role,actor:actionActor,content:comment,createdAt:now()}
+   record.comments.unshift(item)
+   record.history.unshift({at:item.createdAt,actor:actionActor,action:`在“${item.nodeName}”节点发表评论：${comment}`})
+   addNotice(s,record.ownerRole,`${record.title}收到${roles[role]}评论`,`${item.nodeName}：${comment}`,'growth',role==='director'?'high':'normal')
+   audit(s,actionActor,`${record.id}：评论${item.nodeName}节点`)
+   await save(s)
+   return stateJson(res,201,s,current)
   }
   const trainingStageMatch=url.pathname.match(/^\/api\/training\/cohorts\/([^/]+)\/stages\/([^/]+)\/action$/)
   if(req.method==='POST'&&trainingStageMatch){
@@ -1221,22 +1435,11 @@ const server=http.createServer(async(req,res)=>{
   }
   const contractMatch=url.pathname.match(/^\/api\/governance\/contracts\/([^/]+)\/action$/)
   if(req.method==='POST'&&contractMatch){
-   const p=await body(req),{current,role,actor}=requireRuntimeRole(req,p.role,['manager','director'])
+   const p=await body(req)
+   requireRuntimeRole(req,p.role,['manager','director'])
    const s=load(),record=s.governance.contracts.find(item=>item.id===contractMatch[1])
    if(!record)return json(res,404,{error:'合同事项不存在'})
-   const action=safeText(p.action,40),comment=safeText(p.comment,1200)
-   if(action==='manager_submit'){
-    if(role!=='manager'||!['manager_draft','returned'].includes(record.status)||!comment)return json(res,409,{error:'经理必须补充续约材料说明后提交'})
-    record.managerComment=comment;record.status='director_pending';record.ownerRole='director';record.owner='运营总监';record.history.push({at:now(),actor,action:`重新提交合同决策：${comment}`});addNotice(s,'director',`合同续约待决策：${record.project}`,`${record.customer} · 合同额${record.amount}万元`,'tasks','high')
-   }else if(action==='director_approve'){
-    if(role!=='director'||record.status!=='director_pending'||!comment)return json(res,409,{error:'总监审批必须填写谈判边界与下一步'})
-    record.status='approved';record.ownerRole='manager';record.owner='客服经理';record.directorComment=comment;record.milestones.forEach(item=>{if(item.status==='active')item.status='done';else if(item.status==='pending')item.status='active'})
-    record.history.push({at:now(),actor,action:`批准续约决策：${comment}`});addNotice(s,'manager',`合同续约决策已批准：${record.project}`,comment,'tasks','normal')
-   }else if(action==='director_return'){
-    if(role!=='director'||record.status!=='director_pending'||!comment)return json(res,409,{error:'总监退回必须填写补充材料要求'})
-    record.status='returned';record.ownerRole='manager';record.owner='客服经理';record.directorComment=comment;record.history.push({at:now(),actor,action:`退回续约材料：${comment}`});addNotice(s,'manager',`合同续约材料被退回：${record.project}`,comment,'tasks','high')
-   }else return json(res,400,{error:'不支持的合同动作'})
-   audit(s,actor,`${record.id}：${record.history.at(-1).action}`);await save(s);return stateJson(res,200,s,current)
+   return json(res,403,{error:'合同台账为只读信息，总监仅可查阅合同状态并接收到期提醒'})
   }
   const meetingMatch=url.pathname.match(/^\/api\/governance\/meetings\/([^/]+)\/action$/)
   if(req.method==='POST'&&meetingMatch){
@@ -1586,6 +1789,62 @@ const server=http.createServer(async(req,res)=>{
    await save(s)
    return stateJson(res,201,s,current)
   }
+  if(req.method==='POST'&&url.pathname==='/api/morning-briefings/suggestions'){
+   const p=await body(req),{current,role,actor}=requireRuntimeRole(req,p.role,['quality','training'])
+   const title=safeText(p.title,120),content=safeText(p.content,1200),targetTeam=safeText(p.targetTeam||'全部班组',128),proposedDate=safeText(p.proposedDate,10)
+   if(title.length<4||content.length<10||!/^\d{4}-\d{2}-\d{2}$/.test(proposedDate))return json(res,400,{error:'请完整填写建议标题、具体内容和建议日期'})
+   const s=load(),item={id:`MBS-${Date.now()}`,sourceRole:role,sourceName:actor,title,content,targetTeam,proposedDate,status:'pending',supervisorComment:'',createdAt:now()}
+   s.morningBriefings.suggestions.unshift(item)
+   addNotice(s,'supervisor',`班前会建议待研判：${title}`,`${roles[role]} ${actor} · ${targetTeam} · 建议日期${proposedDate}`,'meeting','normal')
+   audit(s,actor,`提交班前会建议${item.id}`);await save(s);return stateJson(res,201,s,current)
+  }
+  let morningSuggestionMatch=url.pathname.match(/^\/api\/morning-briefings\/suggestions\/([^/]+)\/action$/)
+  if(req.method==='POST'&&morningSuggestionMatch){
+   const p=await body(req),{current,actor}=requireRuntimeRole(req,p.role,['supervisor'])
+   const s=load(),item=s.morningBriefings.suggestions.find(x=>x.id===morningSuggestionMatch[1]);if(!item)return json(res,404,{error:'班前会建议不存在'})
+   if(item.status!=='pending')return json(res,409,{error:'该建议已完成研判'})
+   if(!['adopt','reject'].includes(p.action))return json(res,400,{error:'未知建议操作'})
+   item.status=p.action==='adopt'?'adopted':'rejected';item.supervisorComment=safeText(p.comment||'',500)
+   if(p.action==='adopt'){
+    const schedule=s.morningBriefings.schedules.find(x=>x.date===item.proposedDate&&(item.targetTeam==='全部班组'||x.team===item.targetTeam))
+    if(schedule&&!schedule.focus.includes(item.title))schedule.focus.push(item.title)
+   }
+   addNotice(s,item.sourceRole,`班前会建议${item.status==='adopted'?'已采纳':'未采纳'}：${item.title}`,item.supervisorComment||'主管已完成研判','meeting','normal')
+   audit(s,actor,`${item.status==='adopted'?'采纳':'驳回'}班前会建议${item.id}`);await save(s);return stateJson(res,200,s,current)
+  }
+  let morningScheduleMatch=url.pathname.match(/^\/api\/morning-briefings\/schedules\/([^/]+)\/action$/)
+  if(req.method==='POST'&&morningScheduleMatch){
+   const p=await body(req),{current,role,actor}=requireRuntimeRole(req,p.role,['supervisor','leader'])
+   const s=load(),item=s.morningBriefings.schedules.find(x=>x.id===morningScheduleMatch[1]);if(!item)return json(res,404,{error:'班前会排期不存在'})
+   if(role==='supervisor'&&['save','issue'].includes(p.action)){
+    item.team=safeText(p.team||item.team,128);item.leader=safeText(p.leader||item.leader,64);item.time=safeText(p.time||item.time,5);item.title=safeText(p.title||item.title,160)
+    item.focus=Array.isArray(p.focus)?p.focus.map(value=>safeText(value,300)).filter(Boolean).slice(0,6):item.focus
+    if(!item.title||!item.focus.length)return json(res,400,{error:'班前会主题和重点内容不能为空'})
+    if(p.action==='issue'){item.status='issued';item.issuedBy=actor;item.issuedAt=now();addNotice(s,'leader',`班前会排期已下发：${item.date}`,`${item.team} · ${item.time} · ${item.title}`,'meeting','high')}
+    audit(s,actor,`${p.action==='issue'?'下发':'保存'}班前会排期${item.id}`)
+   }else if(role==='leader'&&p.action==='complete'){
+    if(item.status!=='issued')return json(res,409,{error:'仅已下发排期可以召开并提交'})
+   const durationSeconds=Math.max(1,Number(p.durationSeconds)||900)
+    const fileName=safeText(String(p.fileName||`${item.team}_${item.date}.webm`).replace(/[\\/\r\n]/g,'_'),200),mimeType=safeText(p.mimeType||'audio/webm',80)
+    let fileSize=0,storageKey=''
+    if(typeof p.contentBase64==='string'&&p.contentBase64){const content=Buffer.from(p.contentBase64,'base64');if(!content.length||content.length>6*1024*1024)return json(res,413,{error:'班前会录音大小需在1字节至6MB之间'});const recordingDir=path.join(dataDir,'morning-recordings');fs.mkdirSync(recordingDir,{recursive:true});storageKey=`${item.id.replace(/[^A-Za-z0-9_-]/g,'_')}.webm`;fs.writeFileSync(path.join(recordingDir,storageKey),content);fileSize=content.length}
+    item.status='completed';item.recording={fileName,mimeType,fileSize,storageKey,durationSeconds,recordedAt:now(),aiSummary:'录音已留存；当前完成时长与结构初评，后续由质检或语音模型复核内容覆盖。'}
+    item.qualityScore=Math.max(60,Math.min(98,Math.round(72+Math.min(durationSeconds,900)/75)))
+    item.qualitySummary=item.qualityScore>=90?'环节完整、目标量化清晰、业务口径一致。':'核心内容已传达，员工互动和复述确认仍需加强。'
+    const team=s.morningBriefings.teams.find(x=>x.team===item.team);if(team){team.held=Math.min(team.planned,team.held+1);team.latestScore=item.qualityScore;team.averageScore=Math.round((team.averageScore+item.qualityScore)/2);team.quality=team.averageScore>=90?'优秀':team.averageScore>=80?'达标':'需帮扶';team.needsHelp=team.averageScore<80}
+    addNotice(s,'supervisor',`班前会已召开：${item.team}`,`录音${Math.round(durationSeconds/60)}分钟 · 系统质量初评${item.qualityScore}分`,'meeting',item.qualityScore<80?'high':'normal')
+    audit(s,actor,`提交班前会录音并完成${item.id}`)
+   }else return json(res,403,{error:'当前岗位或操作不匹配'})
+   await save(s);return stateJson(res,200,s,current)
+  }
+  if(req.method==='POST'&&url.pathname==='/api/morning-briefings/help-task'){
+   const p=await body(req),{current,role,actor}=requireRuntimeRole(req,p.role,['manager','director'])
+   const s=load(),team=s.morningBriefings.teams.find(x=>x.team===p.team);if(!team)return json(res,404,{error:'班组不存在'})
+   const sourceKey=`morning-help:${team.team}:${new Date().toISOString().slice(0,10)}`,duplicate=s.tasks.find(item=>item.sourceKey===sourceKey&&item.status!=='closed')
+   if(duplicate)return json(res,409,{error:'该班组已有未关闭的班前会帮扶任务'})
+   const task={id:`TK-MB-${Date.now()}`,eventId:`MB-HELP-${Date.now()}`,title:`${team.team}班前会质量帮扶`,type:'班前会质量帮扶',ownerRole:'supervisor',owner:team.supervisor,supervisor:actor,status:'todo',phase:'P',progress:0,dueAt:new Date(Date.now()+3*24*60*60*1000).toISOString(),evidence:'',verification:'',createdAt:now(),updatedAt:now(),sourceKey,sourceLabel:'班前会质量监督',team:team.team,history:[{at:now(),actor,action:`依据召开率${team.held}/${team.planned}、平均质量${team.averageScore}分下发帮扶：${team.diagnosis}`} ]}
+   s.tasks.unshift(task);addNotice(s,'supervisor',`班前会帮扶任务：${team.team}`,`由${actor}下发，3日内完成跟会、辅导和录音复评。`,'tasks','high');audit(s,actor,`创建班前会帮扶任务${task.id}`);await save(s);return stateJson(res,201,s,current)
+  }
   let taskAttachmentMatch=url.pathname.match(/^\/api\/tasks\/([^/]+)\/attachments(?:\/([^/]+))?$/)
   if(req.method==='POST'&&taskAttachmentMatch&&!taskAttachmentMatch[2]){
    const p=await body(req),{current,role,actor}=requireRuntimeRole(req,p.role)
@@ -1637,10 +1896,13 @@ const server=http.createServer(async(req,res)=>{
   }
   if(req.method==='POST'&&url.pathname==='/api/tasks'){
    const p=await body(req)
-   if(p.source==='management-directive'){
-    const {current,role,actor}=requireRuntimeRole(req,p.role,['supervisor','manager','director'])
+   if(['management-directive','role-request'].includes(p.source)){
+    const isRequest=p.source==='role-request'
+    const allowedInitiators=isRequest?Object.keys(requestTargets):['supervisor','manager','director']
+    const {current,role,actor}=requireRuntimeRole(req,p.role,allowedInitiators)
     const targetRole=safeText(p.targetRole,32)
-    if(!directiveTargets[role]?.includes(targetRole))return json(res,403,{error:'当前岗位不能向该岗位下发任务'})
+    const allowedTargets=isRequest?requestTargets[role]:directiveTargets[role]
+    if(!allowedTargets?.includes(targetRole))return json(res,403,{error:isRequest?'当前岗位不能向该岗位发起任务需求':'当前岗位不能向该岗位下发任务'})
     const title=safeText(p.title,120),problem=safeText(p.problem,1200),issueCategory=safeText(p.issueCategory,64)
     const issueLocation=safeText(p.issueLocation,500),target=safeText(p.target,600),successCriteria=safeText(p.successCriteria,1200)
     const actionPlan=safeText(p.actionPlan,1200),owner=safeText(p.owner,128)
@@ -1657,19 +1919,19 @@ const server=http.createServer(async(req,res)=>{
     const s=load(),day=new Date().toISOString().slice(0,10).replaceAll('-','')
     const sequence=String(s.tasks.filter(item=>item.id.startsWith(`LP-${day}-`)).length+1).padStart(3,'0')
     const task=normalizeLeanTask({
-     id:`LP-${day}-${sequence}`,eventId:`DIRECTIVE-${Date.now()}`,title,type:'管理指派',workflowKind:'lean_directive',
-     sourceLabel:'精益管理任务',sourceKey:`management-directive:${Date.now()}`,initiatorRole:role,initiatorName:actor,
+     id:`LP-${day}-${sequence}`,eventId:`${isRequest?'REQUEST':'DIRECTIVE'}-${Date.now()}`,title,type:isRequest?'岗位需求':'管理指派',workflowKind:'lean_directive',
+     sourceLabel:isRequest?'岗位任务需求':'精益管理任务',sourceKey:`${p.source}:${Date.now()}`,initiatorRole:role,initiatorName:actor,
      originRole:targetRole,executionOwnerRole:targetRole,executionOwner:owner,ownerRole:targetRole,owner,
      verificationRole:role,verificationOwner:actor,supervisor:actor,status:'todo',phase:'P',progress:0,
      problem,issueCategory,issueLocation,target,successCriteria,actionPlan,metric,
      employeeId:safeText(p.employeeCode||'',64),person:safeText(p.employeeName||'',128),team:safeText(p.team||'',255),
      plannedStartAt,submitDueAt,verificationDueAt,dueAt:submitDueAt,evidence:'',verification:'',
      aiRationale:safeText(p.aiRationale||suggestion.rationale,1200),attachments:[],createdAt:now(),updatedAt:now(),
-     history:[{at:now(),actor,action:`自上而下指派${roles[targetRole]}：${problem}；目标：${target}；提交时限：${submitDueAt}`}],
+     history:[{at:now(),actor,action:`${isRequest?'发起岗位任务需求至':'自上而下指派'}${roles[targetRole]}：${problem}；目标：${target}；提交时限：${submitDueAt}`}],
     })
     s.tasks.unshift(task)
-    addNotice(s,targetRole,`上级指派任务：${title}`,`${actor}下发 · ${target} · ${new Date(submitDueAt).toLocaleString('zh-CN',{hour12:false})}前提交`,'tasks','high')
-    audit(s,actor,`创建精益管理任务${task.id}并指派${roles[targetRole]}`)
+    addNotice(s,targetRole,isRequest?`任务需求待响应：${title}`:`上级指派任务：${title}`,`${actor}${isRequest?'发起需求':'下发'} · ${target} · ${new Date(submitDueAt).toLocaleString('zh-CN',{hour12:false})}前提交`,'tasks','high')
+    audit(s,actor,`创建${isRequest?'岗位任务需求':'精益管理任务'}${task.id}并交由${roles[targetRole]}处理`)
     await save(s)
     return stateJson(res,201,s,current)
    }
@@ -1706,7 +1968,94 @@ const server=http.createServer(async(req,res)=>{
   if(req.method==='POST'&&m){
    const p=await body(req),{current,role,actor}=requireRuntimeRole(req,p.role)
    const s=load(),t=s.tasks.find(x=>x.id===m[1]);if(!t)return json(res,404,{error:'任务不存在'});
-   if(p.action==='lean_start'){
+   const taskBefore=structuredClone(t)
+   const noticeIdsBefore=new Set(s.notifications.map(item=>item.id))
+   const recordManagement=(type,note,extra={})=>{
+    const record={id:`MR-${Date.now()}-${Math.random().toString(36).slice(2,6)}`,type,actorRole:role,actor,note,createdAt:now(),...extra}
+    t.managementRecords=Array.isArray(t.managementRecords)?t.managementRecords:[]
+    t.managementRecords.unshift(record)
+    t.history.push({at:record.createdAt,actor,action:note})
+    return record
+   }
+   const leanRelated=[t.initiatorRole,t.executionOwnerRole,t.ownerRole,t.verificationRole].includes(role)
+   const leanManager=role==='director'||role==='manager'||(role==='supervisor'&&['leader','employee'].includes(t.executionOwnerRole))
+   if(p.action==='task_comment'){
+    const allowed=leanRelated||leanManager||[t.originRole,t.ownerRole,t.verificationRole].includes(role)
+    if(!allowed)return json(res,403,{error:'当前岗位不能评论该任务'})
+    const nodeCode=safeText(p.nodeCode,1).toUpperCase(),nodeNames={P:'目标设定',D:'执行改善',C:'验证结果',A:'闭环固化'}
+    if(!nodeNames[nodeCode])return json(res,400,{error:'请选择P、D、C或A评论节点'})
+    const comment=safeText(p.comment,2000)
+    if(comment.length<5)return json(res,400,{error:'请填写至少5字的评论内容'})
+    recordManagement('comment',`${nodeCode}·${nodeNames[nodeCode]}评论：${comment}`,{before:{nodeCode,nodeName:nodeNames[nodeCode]}})
+    if(role!==t.ownerRole)addNotice(s,t.ownerRole,`任务新增${nodeCode}节点评论：${t.title}`,`${actor}：${comment}`,'tasks','normal')
+   }
+   else if(p.action==='lean_follow_up'){
+    if(t.workflowKind!=='lean_directive'||t.archivedAt||(!leanRelated&&!leanManager))return json(res,403,{error:'当前岗位不能跟进该精益任务'})
+    const note=safeText(p.comment,2000)
+    if(note.length<5)return json(res,400,{error:'请填写至少5字的跟进事实、进展或待协调事项'})
+    const nextFollowUpAt=p.nextFollowUpAt?normalizeDueAt(p.nextFollowUpAt):''
+    t.lastFollowUpAt=now();t.nextFollowUpAt=nextFollowUpAt
+    recordManagement('follow_up',`跟进记录：${note}`,{nextFollowUpAt})
+    if(role!==t.ownerRole)addNotice(s,t.ownerRole,`任务跟进：${t.title}`,`${actor}记录：${note}`,'tasks','normal')
+   }
+   else if(p.action==='lean_intervene'){
+    if(t.workflowKind!=='lean_directive'||t.status==='closed'||t.archivedAt||!leanManager)return json(res,403,{error:'当前岗位不能介入该精益任务'})
+    const requirement=safeText(p.comment,2000)
+    if(requirement.length<10)return json(res,400,{error:'请填写至少10字的介入原因、管理要求和预期结果'})
+    const nextFollowUpAt=p.nextFollowUpAt?normalizeDueAt(p.nextFollowUpAt):''
+    t.interventionCount=Number(t.interventionCount||0)+1;t.nextFollowUpAt=nextFollowUpAt||t.nextFollowUpAt
+    t.interventionRequirement=requirement
+    recordManagement('intervention',`${roles[role]}介入：${requirement}`,{nextFollowUpAt})
+    addNotice(s,t.executionOwnerRole,`上级介入：${t.title}`,`${actor}要求：${requirement}`,'tasks','high')
+   }
+   else if(p.action==='lean_reassign'){
+    const targetRole=safeText(p.targetRole,32),owner=safeText(p.owner,128)
+    const canReassign=role===t.initiatorRole||role===t.executionOwnerRole||role==='manager'||role==='director'
+    if(t.workflowKind!=='lean_directive'||t.status==='closed'||t.archivedAt||!canReassign||!directiveTargets[role]?.includes(targetRole))return json(res,403,{error:'当前岗位不能将该任务改派给目标岗位'})
+    if(!owner)return json(res,400,{error:'请填写改派后的具体责任人'})
+    const before={role:t.executionOwnerRole||'',owner:t.executionOwner||''},after={role:targetRole,owner}
+    t.executionOwnerRole=targetRole;t.executionOwner=owner;t.originRole=targetRole
+    if(['todo','doing','returned_to_origin'].includes(t.status)){t.ownerRole=targetRole;t.owner=owner}
+    for(const node of t.nodes||[])if(['execute','submit'].includes(node.code)){node.ownerRole=targetRole;node.owner=owner}
+    recordManagement('reassign',`任务由${roles[before.role]||before.role} ${before.owner}改派至${roles[targetRole]} ${owner}`,{before,after})
+    addNotice(s,targetRole,`任务改派：${t.title}`,`${actor}已将任务改派给${owner}，请确认执行窗口。`,'tasks','high')
+   }
+   else if(p.action==='lean_change_deadline'){
+    const allowed=role===t.initiatorRole||role===t.verificationRole||role==='manager'||role==='director'
+    if(t.workflowKind!=='lean_directive'||t.status==='closed'||t.archivedAt||!allowed)return json(res,403,{error:'当前岗位不能调整该任务时限'})
+    if(!p.submitDueAt||!p.verificationDueAt)return json(res,400,{error:'执行提交时限和上级验证时限必须同时填写'})
+    const submitDueAt=normalizeDueAt(p.submitDueAt),verificationDueAt=normalizeDueAt(p.verificationDueAt)
+    if(Date.parse(submitDueAt)>Date.parse(verificationDueAt))return json(res,400,{error:'执行提交时限不能晚于上级验证时限'})
+    const note=safeText(p.comment,1000)
+    if(note.length<5)return json(res,400,{error:'请填写至少5字的时限调整原因'})
+    const before={submitDueAt:t.submitDueAt||'',verificationDueAt:t.verificationDueAt||''},after={submitDueAt,verificationDueAt}
+    t.submitDueAt=submitDueAt;t.verificationDueAt=verificationDueAt;t.dueAt=submitDueAt
+    for(const node of t.nodes||[])if(node.code==='submit')node.plannedAt=submitDueAt;else if(['verify','act'].includes(node.code))node.plannedAt=verificationDueAt
+    recordManagement('deadline_change',`调整任务时限：${note}`,{before,after})
+    addNotice(s,t.executionOwnerRole,`任务时限调整：${t.title}`,`${actor}调整提交时限至${new Date(submitDueAt).toLocaleString('zh-CN',{hour12:false})}`,'tasks','high')
+   }
+   else if(p.action==='lean_archive'){
+    const allowed=role===t.initiatorRole||role===t.verificationRole||role==='manager'||role==='director'
+    if(t.workflowKind!=='lean_directive'||t.status!=='closed'||t.archivedAt||!allowed)return json(res,409,{error:'仅已关闭且未归档的精益任务可由发起/验收岗位归档'})
+    const note=safeText(p.comment,1000)
+    if(note.length<5)return json(res,400,{error:'请填写至少5字的归档说明或复盘结论'})
+    t.archivedAt=now();t.archivedBy=actor;t.archiveNote=note;t.nextFollowUpAt=''
+    recordManagement('archive',`任务归档：${note}`)
+    addNotice(s,t.executionOwnerRole,`任务已归档：${t.title}`,`${actor}完成归档：${note}`,'tasks','normal')
+   }
+   else if(p.action==='lean_reopen'){
+    const allowed=role===t.initiatorRole||role===t.verificationRole||role==='manager'||role==='director'
+    if(t.workflowKind!=='lean_directive'||t.status!=='closed'||!allowed)return json(res,409,{error:'仅已关闭任务可由发起/验收岗位重新开启'})
+    const note=safeText(p.comment,1600)
+    if(note.length<10)return json(res,400,{error:'请填写至少10字的复发事实、重开原因和下一步要求'})
+    t.status='returned_to_origin';t.phase='D';t.progress=45;t.ownerRole=t.executionOwnerRole;t.owner=t.executionOwner
+    t.archivedAt='';t.archivedBy='';t.archiveNote='';t.closedAt='';t.verifiedAt='';t.submittedAt='';t.verification=''
+    t.reopenCount=Number(t.reopenCount||0)+1;t.supervisorGuidance=note
+    for(const node of t.nodes||[])if(['execute','submit','verify','act'].includes(node.code)){node.status=node.code==='execute'?'active':'pending';node.completedAt='';node.result=''}
+    recordManagement('reopen',`任务重新开启：${note}`)
+    addNotice(s,t.executionOwnerRole,`任务重新开启：${t.title}`,`${actor}发现问题复发：${note}`,'tasks','high')
+   }
+   else if(p.action==='lean_start'){
     if(t.workflowKind!=='lean_directive'||role!==t.executionOwnerRole||t.ownerRole!==role||!['todo','returned_to_origin'].includes(t.status))return json(res,409,{error:'当前岗位不能开始该精益任务'})
     t.status='doing';t.phase='D';t.progress=25;t.startedAt=now();t.ownerRole=t.executionOwnerRole;t.owner=t.executionOwner
     const executeNode=t.nodes?.find(item=>item.code==='execute');if(executeNode)executeNode.status='active'
@@ -1831,7 +2180,12 @@ const server=http.createServer(async(req,res)=>{
    }
    else if(p.action==='escalate'){
     const chain=['leader','supervisor','manager','director'];let i=chain.indexOf(t.ownerRole);if(i<chain.length-1)t.ownerRole=chain[i+1];t.status='escalated';t.history.push({at:now(),actor,action:`逾期升级至${roles[t.ownerRole]}`});addNotice(s,t.ownerRole,`逾期升级：${t.title}`,`任务已升级至${roles[t.ownerRole]}。`,'tasks','high')
-   } else return json(res,400,{error:'未知操作'});t.updatedAt=now();audit(s,actor,`${p.action} ${t.id}`);await save(s);return stateJson(res,200,s,current)
+   } else return json(res,400,{error:'未知操作'});t.updatedAt=now();audit(s,actor,`${p.action} ${t.id}`)
+   const newNotices=s.notifications.filter(item=>!noticeIdsBefore.has(item.id))
+   const saved=await saveTaskActionState(s,{
+    taskId:t.id,action:p.action,actorRole:role,beforeTask:taskBefore,history:t.history.at(-1),notifications:newNotices,audit:s.audit[0],
+   })
+   return taskActionJson(res,200,saved,current,t.id,new Set(newNotices.map(item=>item.id)))
   }
   if(req.method==='POST'&&url.pathname==='/api/simulate-timeout'){
    const p=await body(req),{current,role,actor}=requireRuntimeRole(req,p.role)
@@ -1858,6 +2212,7 @@ server.listen(PORT,'0.0.0.0',()=>{
  if(startupDatabase.connected)console.log(process.env.AUTO_MIGRATE==='false'?'数据库迁移: 由部署初始化容器负责':`team_006业务表已就绪: ${startupMigrations.length}个迁移`)
  console.log(`业务状态: ${statePersistenceMode()} · 账号权限: ${accessPersistence.mode}`)
 })
+startTaskOutboxWorker()
 
 let refreshTimer
 const runScheduledRefresh=async()=>{
@@ -1866,9 +2221,7 @@ const runScheduledRefresh=async()=>{
   const claimed=await claimScheduledBatch('half_hour_refresh',batchKey,instanceId)
   if(!claimed)return
   const s=load();s.meta.batchNo+=1;s.meta.lastRefresh=now();s.meta.nextRefresh=new Date(Date.now()+30*60*1000).toISOString()
-  addNotice(s,'data',`半小时批次 #${s.meta.batchNo} 自动刷新完成`,'四类预警规则已完成定时扫描。','reports','normal')
-  audit(s,'定时调度器',`自动执行半小时刷新批次 #${s.meta.batchNo}`)
-  await save(s)
+  await saveSnapshotOnlyState(s)
   await finishScheduledBatch('half_hour_refresh',batchKey,'completed',`批次#${s.meta.batchNo}完成`)
  }catch(error){
   await finishScheduledBatch('half_hour_refresh',batchKey,'failed',error.message).catch(()=>{})
@@ -1888,6 +2241,7 @@ const shutdown=signal=>{
  shuttingDown=true
  console.log(`收到${signal}，正在安全停止服务`)
  if(refreshTimer)clearTimeout(refreshTimer)
+ stopTaskOutboxWorker()
  const forceTimer=setTimeout(()=>process.exit(1),10_000)
  server.close(async()=>{
   try{await databaseClose()}finally{

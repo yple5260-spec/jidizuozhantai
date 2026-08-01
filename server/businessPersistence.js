@@ -57,6 +57,29 @@ const syncTasks=async(connection,state)=>{
    nullable(text(metric.unit||'',32)),date(task.plannedStartAt),date(task.submitDueAt||task.dueAt),date(task.verificationDueAt),
    date(task.startedAt),date(task.submittedAt),date(task.verifiedAt),nullable(task.aiRationale||task.aiTargetRationale),
   ])
+  await connection.query(`
+   INSERT INTO platform_pdca_control
+    (task_id,archived_at,archived_by,archive_note,next_follow_up_at,last_follow_up_at,intervention_count,intervention_requirement,reopen_count)
+   VALUES (?,?,?,?,?,?,?,?,?)
+   ON DUPLICATE KEY UPDATE archived_at=VALUES(archived_at),archived_by=VALUES(archived_by),
+    archive_note=VALUES(archive_note),next_follow_up_at=VALUES(next_follow_up_at),
+    last_follow_up_at=VALUES(last_follow_up_at),intervention_count=VALUES(intervention_count),
+    intervention_requirement=VALUES(intervention_requirement),reopen_count=VALUES(reopen_count)`,[
+   task.id,date(task.archivedAt),nullable(text(task.archivedBy||'',128)),nullable(task.archiveNote),
+   date(task.nextFollowUpAt),date(task.lastFollowUpAt),Number(task.interventionCount||0),nullable(task.interventionRequirement),Number(task.reopenCount||0),
+  ])
+  for(const record of task.managementRecords||[]){
+   await connection.query(`
+    INSERT INTO platform_pdca_management_record
+     (id,task_id,record_type,actor_role,actor_name,note_text,next_follow_up_at,before_json,after_json,created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?)
+    ON DUPLICATE KEY UPDATE note_text=VALUES(note_text),next_follow_up_at=VALUES(next_follow_up_at),
+     before_json=VALUES(before_json),after_json=VALUES(after_json)`,[
+    text(record.id,128),task.id,text(record.type,32),text(record.actorRole||'unknown',32),
+    text(record.actor||'平台',128),record.note||'未记录说明',date(record.nextFollowUpAt),
+    JSON.stringify(record.before||{}),JSON.stringify(record.after||{}),date(record.createdAt)||new Date(),
+   ])
+  }
   for(const node of task.nodes||[]){
    await connection.query(`
     INSERT INTO platform_pdca_node

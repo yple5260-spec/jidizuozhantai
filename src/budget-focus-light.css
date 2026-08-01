@@ -1,0 +1,40 @@
+/* AI追回计划采用浅色表面；正文使用深蓝灰，避免与绿色背景混成同一色系。 */
+.budget-focus {
+  border-color: #d3e2dc;
+  background: linear-gradient(145deg, #f8fbfa, #edf5f1);
+  color: #15283b;
+  box-shadow: 0 6px 18px rgba(21, 61, 49, .06);
+}
+
+.budget-focus .budget-section-head span {
+  color: #08745b;
+}
+
+.budget-focus .budget-section-head h3 {
+  color: #15283b;
+}
+
+.budget-focus .budget-section-head svg {
+  color: #a96d08;
+}
+
+.budget-focus article {
+  border-top-color: #d8e5e0;
+}
+
+.budget-focus article > b {
+  background: #fff1cf;
+  color: #875700;
+}
+
+.budget-focus h4 {
+  color: #172b3d;
+}
+
+.budget-focus p {
+  color: #30495b;
+}
+
+.budget-focus small {
+  color: #607485;
+}

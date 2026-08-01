@@ -45,6 +45,20 @@ type AiChatResponse={
  usage?:{prompt_tokens?:number;completion_tokens?:number;total_tokens?:number}|null
 }
 
+export type TeamAttributionMember={
+ jobNo:string;name:string;team:string
+ responses:{actual:number|null;target:number|null};cph:{actual:number|null;target:number|null}
+ workHours:{actual:number|null;target:number|null};utilization:{actual:number|null;target:number|null}
+ handleTime:{actual:number|null;target:number|null};busyRest:{actual:number|null;target:number|null}
+ sourceImpacts:{workHours:number|null;utilization:number|null;talkTime:number|null;afterCall:number|null;busyRest:number|null}
+}
+export type TeamAttributionResult={
+ employee:{jobNo:string;name:string;team:string};formula:string;utilizationFormula:string
+ calculation:{responseActual:number|null;responseTarget:number|null;responseGap:number|null;formulaActual:number|null;formulaTarget:number|null;formulaGap:number|null}
+ drivers:{code:string;label:string;actual:number|null;target:number|null;unit:string;direction:'higher'|'lower';gap:number|null;impactCalls:number|null;evidence:string;status:'risk'|'met'|'unknown'}[]
+ conclusion:string;recommendations:string[];provider:'DeepSeek'|'system';model:string;aiNarrative:string;warning?:string
+}
+
 async function request<T>(path:string,options?:RequestInit):Promise<T>{
  const response=await fetch(path,{
   headers:{'content-type':'application/json','cache-control':'no-cache'},
@@ -75,6 +89,10 @@ export const aiApi={
  chat:(messages:AiChatMessage[],context:AiContext)=>request<AiChatResponse>('/api/ai/chat',{
   method:'POST',
   body:JSON.stringify({messages,context}),
+ }),
+ teamAttribution:(role:string,member:TeamAttributionMember)=>request<TeamAttributionResult>('/api/ai/team-attribution',{
+  method:'POST',
+  body:JSON.stringify({role,member}),
  }),
  draftAction:(messages:AiChatMessage[],context:AiContext)=>request<{draft:AiActionDraft;provider:string;model:string}>('/api/ai/action-drafts',{
   method:'POST',

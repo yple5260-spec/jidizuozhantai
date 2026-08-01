@@ -115,6 +115,91 @@ test('审批白名单和完整 PDCA 闭环',async()=>{
  }finally{await app.close()}
 })
 
+test('固化先进遵循量化门槛、AI匹配与质检录音权限',async()=>{
+ const app=await startServer()
+ try{
+  const state=(await app.request('GET','/api/state')).data
+  assert.equal(state.excellence.evaluation.topPercent,20)
+  assert.equal(state.excellence.employeeAchievements.length,10)
+  assert.ok(state.excellence.experiences.every(item=>item.sourceTaskId&&item.evidence.length))
+  const access=(await app.request('GET','/api/access')).data
+  assert.ok(access.roles.find(item=>item.id==='customer-agent').menus.includes('excellence'))
+  assert.ok(access.roles.find(item=>item.id==='quality-specialist').menus.includes('excellence'))
+
+  const matched=await app.request('GET','/api/excellence/matches?query=续约承诺期重复来电')
+  assert.equal(matched.status,200)
+  assert.equal(matched.data.matches[0].id,'EXP-202607-001')
+  assert.ok(matched.data.matches[0].matchScore>=76)
+
+  const published=await app.request('POST','/api/excellence/experiences/EXP-202607-003/action',{role:'quality',action:'publish_ai'})
+  assert.equal(published.status,200)
+  assert.equal(published.data.excellence.experiences.find(item=>item.id==='EXP-202607-003').aiPublished,true)
+  const forbidden=await app.request('POST','/api/excellence/recordings',{role:'employee',title:'测试录音',callId:'CALL-X',employeeName:'员工',team:'8班',business:'续约',durationSeconds:120,qualityScore:98,targetScore:95,notes:'这是一段完整且有效的亮点说明'})
+  assert.equal(forbidden.status,403)
+  const belowTarget=await app.request('POST','/api/excellence/recordings',{role:'quality',title:'未达标录音',callId:'CALL-Y',employeeName:'员工',team:'8班',business:'续约',durationSeconds:120,qualityScore:90,targetScore:95,notes:'这是一段完整且有效的亮点说明'})
+  assert.equal(belowTarget.status,409)
+  const created=await app.request('POST','/api/excellence/recordings',{role:'quality',title:'办理结果复述示范',callId:'CALL-Z',employeeJobNo:'JR10001',employeeName:'测试员工',team:'普通客服一区·8班',business:'续约业务',durationSeconds:180,qualityScore:99,targetScore:95,notes:'先确认客户诉求，再用时间线解释生效节点，最后让客户复述确认。',phrase:'我和您再对一遍办理结果与生效时间。',aiPublished:true})
+  assert.equal(created.status,201)
+  assert.equal(created.data.excellence.recordings[0].qualityScore,99)
+  assert.equal(created.data.excellence.phrases[0].sourceRecordingId,created.data.excellence.recordings[0].id)
+ }finally{await app.close()}
+})
+
+test('经理与总监经营数据严格采用河北10015全年预算和1至6月达成附件',async()=>{
+ const app=await startServer()
+ try{
+  const state=(await app.request('GET','/api/state')).data
+  assert.equal(state.financialPerformance.sources.budget.fileName,'河北基地-10015-项目预算.xls')
+  assert.equal(state.financialPerformance.sources.actual.fileName,'北一各月指标查询(2026-08-01).xls')
+  assert.deepEqual(state.financialPerformance.months,['202601','202602','202603','202604','202605','202606'])
+  assert.deepEqual(state.financialPerformance.budgetMonths,['202601','202602','202603','202604','202605','202606','202607','202608','202609','202610','202611','202612'])
+  const revenue=state.financialPerformance.metrics.find(item=>item.code==='01')
+  assert.equal(revenue.budget.slice(0,6).reduce((sum,value)=>sum+value,0),13569466)
+  assert.equal(revenue.budget.reduce((sum,value)=>sum+value,0),28232558)
+  assert.equal(revenue.actual.reduce((sum,value)=>sum+value,0),12995076)
+  assert.equal(state.governance.budgets[0].id,'BG-2026H1-10015')
+  assert.equal(state.governance.budgets[0].revenueTarget,1356.95)
+  assert.equal(state.governance.budgets[0].forecastRevenue,1299.51)
+ }finally{await app.close()}
+})
+
+test('班前会按监督、排期、召开录音、员工浏览和专业建议形成跨岗位闭环',async()=>{
+ const app=await startServer()
+ try{
+  const baseline=(await app.request('GET','/api/state')).data
+  assert.equal(baseline.morningBriefings.teams.length,5)
+  assert.equal(baseline.morningBriefings.schedules.length,7)
+  assert.equal(baseline.morningBriefings.todayBulletin.points.length,3)
+  const access=(await app.request('GET','/api/access')).data
+  for(const roleId of ['operation-director','customer-manager','customer-supervisor','team-leader','customer-agent','quality-specialist','training-manager'])assert.ok(access.roles.find(item=>item.id===roleId).menus.includes('meeting'))
+
+  const suggested=await app.request('POST','/api/morning-briefings/suggestions',{role:'quality',title:'重复来电专项复盘',content:'建议未来一周统一复盘续约争议录音，并完成班后抽测和结果回填。',targetTeam:'普通客服一区·4班',proposedDate:baseline.morningBriefings.schedules[1].date})
+  assert.equal(suggested.status,201)
+  const suggestion=suggested.data.morningBriefings.suggestions[0]
+  const adopted=await app.request('POST',`/api/morning-briefings/suggestions/${suggestion.id}/action`,{role:'supervisor',action:'adopt',comment:'纳入对应日期重点'})
+  assert.equal(adopted.status,200)
+  assert.equal(adopted.data.morningBriefings.suggestions.find(item=>item.id===suggestion.id).status,'adopted')
+
+  const draft=adopted.data.morningBriefings.schedules.find(item=>item.status==='draft')
+  const issued=await app.request('POST',`/api/morning-briefings/schedules/${draft.id}/action`,{role:'supervisor',action:'issue',team:'普通客服一区·5班',leader:'陈敏',time:'08:25',title:'质量与产能协同复盘',focus:['昨日指标Gap','质检TOP问题','会后抽测']})
+  assert.equal(issued.status,200)
+  assert.equal(issued.data.morningBriefings.schedules.find(item=>item.id===draft.id).status,'issued')
+
+  const leaderSchedule=issued.data.morningBriefings.schedules.find(item=>item.status==='issued')
+  const completed=await app.request('POST',`/api/morning-briefings/schedules/${leaderSchedule.id}/action`,{role:'leader',action:'complete',fileName:'班前会录音.webm',mimeType:'audio/webm',contentBase64:Buffer.from('morning-briefing-audio').toString('base64'),durationSeconds:900})
+  assert.equal(completed.status,200)
+  const completedSchedule=completed.data.morningBriefings.schedules.find(item=>item.id===leaderSchedule.id)
+  assert.equal(completedSchedule.status,'completed')
+  assert.ok(completedSchedule.qualityScore>=80)
+  assert.equal(completedSchedule.recording.fileSize,22)
+  assert.equal(String(await readFile(path.join(app.dataDir,'morning-recordings',completedSchedule.recording.storageKey))), 'morning-briefing-audio')
+
+  const helped=await app.request('POST','/api/morning-briefings/help-task',{role:'manager',team:'普通客服一区·4班'})
+  assert.equal(helped.status,201)
+  assert.ok(helped.data.tasks.some(item=>item.sourceLabel==='班前会质量监督'&&item.team==='普通客服一区·4班'))
+ }finally{await app.close()}
+})
+
 test('复位同步恢复主文件与备份',async()=>{
  const app=await startServer()
  try{
@@ -248,20 +333,111 @@ test('精益任务支持AI目标建议、跨岗位指派、数据辅助验收和
 
   const forbidden=await app.request('POST','/api/tasks',{...payload,role:'supervisor'})
   assert.equal(forbidden.status,403)
+  const supervisorCreated=await app.request('POST','/api/tasks',{
+   ...payload,role:'supervisor',targetRole:'leader',owner:'张伟（班长）',title:'主管下发班组满意率改善任务',
+  })
+  assert.equal(supervisorCreated.status,201)
+  assert.equal(supervisorCreated.data.tasks[0].initiatorRole,'supervisor')
+  assert.equal(supervisorCreated.data.tasks[0].executionOwnerRole,'leader')
+  assert.equal(supervisorCreated.data.tasks[0].verificationRole,'supervisor')
+  const supervisorTask=supervisorCreated.data.tasks[0]
+  const commented=await app.request('POST',`/api/tasks/${supervisorTask.id}/action`,{
+   role:'director',actor:'测试总监',action:'task_comment',nodeCode:'D',
+   comment:'请重点核对改善动作是否覆盖低满意录音中的服务差距，并在提交前补充量化结果。',
+  })
+  assert.equal(commented.status,200)
+  const commentedTask=commented.data.tasks.find(item=>item.id===supervisorTask.id)
+  assert.equal(commentedTask.managementRecords[0].type,'comment')
+  assert.equal(commentedTask.managementRecords[0].before.nodeCode,'D')
+  assert.match(commentedTask.managementRecords[0].note,/D·执行改善评论/)
+  assert.match(commentedTask.history.at(-1).action,/D·执行改善评论/)
+  const directorCreated=await app.request('POST','/api/tasks',{
+   ...payload,role:'director',targetRole:'manager',owner:'吴欣欣（客服经理）',title:'总监下发业务线满意率改善任务',
+  })
+  assert.equal(directorCreated.status,201)
+  assert.equal(directorCreated.data.tasks[0].initiatorRole,'director')
+  assert.equal(directorCreated.data.tasks[0].executionOwnerRole,'manager')
+  assert.equal(directorCreated.data.tasks[0].verificationRole,'director')
+  const managerTask=directorCreated.data.tasks[0]
+  const managerStarted=await app.request('POST',`/api/tasks/${managerTask.id}/action`,{role:'manager',actor:'测试经理',action:'lean_start'})
+  assert.equal(managerStarted.status,200)
+  assert.equal(managerStarted.data.tasks.find(item=>item.id===managerTask.id).status,'doing')
+  const managerSubmitted=await app.request('POST',`/api/tasks/${managerTask.id}/action`,{
+   role:'manager',actor:'测试经理',action:'lean_submit',
+   evidence:'已完成三通低满意录音复盘，并完成服务四动作校准和两通新录音抽检。',
+  })
+  assert.equal(managerSubmitted.status,200)
+  assert.equal(managerSubmitted.data.tasks.find(item=>item.id===managerTask.id).status,'pending_verification')
+  assert.equal(managerSubmitted.data.tasks.find(item=>item.id===managerTask.id).ownerRole,'director')
+
+  const followed=await app.request('POST',`/api/tasks/${task.id}/action`,{
+   role:'quality',actor:'测试质检',action:'lean_follow_up',
+   comment:'已完成低满意录音调取，等待班组补充当日服务记录。',
+   nextFollowUpAt:new Date(Date.now()+3*60*60*1000).toISOString(),
+  })
+  assert.equal(followed.status,200)
+  const followedTask=followed.data.tasks.find(item=>item.id===task.id)
+  assert.ok(followedTask.lastFollowUpAt)
+  assert.equal(followedTask.managementRecords[0].type,'follow_up')
+
+  const intervened=await app.request('POST',`/api/tasks/${task.id}/action`,{
+   role:'manager',actor:'测试经理',action:'lean_intervene',
+   comment:'需在今日完成录音复盘并同步具体差错点，阻塞超过两小时立即升级。',
+   nextFollowUpAt:new Date(Date.now()+4*60*60*1000).toISOString(),
+  })
+  assert.equal(intervened.status,200)
+  const intervenedTask=intervened.data.tasks.find(item=>item.id===task.id)
+  assert.equal(intervenedTask.interventionCount,1)
+  assert.match(intervenedTask.interventionRequirement,/阻塞超过两小时/)
+  assert.equal(intervenedTask.managementRecords[0].type,'intervention')
+
+  const changedSubmitDueAt=new Date(Date.now()+30*60*60*1000).toISOString()
+  const changedVerificationDueAt=new Date(Date.now()+54*60*60*1000).toISOString()
+  const deadlineChanged=await app.request('POST',`/api/tasks/${task.id}/action`,{
+   role:'manager',actor:'测试经理',action:'lean_change_deadline',
+   comment:'因录音调取窗口延后，统一顺延执行与验证时间。',
+   submitDueAt:changedSubmitDueAt,verificationDueAt:changedVerificationDueAt,
+  })
+  assert.equal(deadlineChanged.status,200)
+  const deadlineTask=deadlineChanged.data.tasks.find(item=>item.id===task.id)
+  assert.equal(deadlineTask.submitDueAt,changedSubmitDueAt)
+  assert.equal(deadlineTask.verificationDueAt,changedVerificationDueAt)
+  assert.equal(deadlineTask.nodes.find(node=>node.code==='submit').plannedAt,changedSubmitDueAt)
+  assert.equal(deadlineTask.managementRecords[0].type,'deadline_change')
+
+  const reassigned=await app.request('POST',`/api/tasks/${task.id}/action`,{
+   role:'manager',actor:'测试经理',action:'lean_reassign',targetRole:'quality',owner:'王磊（质检专员）',
+  })
+  assert.equal(reassigned.status,200)
+  const reassignedTask=reassigned.data.tasks.find(item=>item.id===task.id)
+  assert.equal(reassignedTask.executionOwner,'王磊（质检专员）')
+  assert.equal(reassignedTask.nodes.find(node=>node.code==='execute').owner,'王磊（质检专员）')
+  assert.equal(reassignedTask.managementRecords[0].type,'reassign')
+
+  const forbiddenIntervention=await app.request('POST',`/api/tasks/${task.id}/action`,{
+   role:'employee',actor:'测试员工',action:'lean_intervene',comment:'员工岗位不能介入上级管理任务。',
+  })
+  assert.equal(forbiddenIntervention.status,403)
+  const earlyArchive=await app.request('POST',`/api/tasks/${task.id}/action`,{
+   role:'manager',actor:'测试经理',action:'lean_archive',comment:'尚未关闭不能归档',
+  })
+  assert.equal(earlyArchive.status,409)
 
   const started=await app.request('POST',`/api/tasks/${task.id}/action`,{role:'quality',actor:'测试质检',action:'lean_start'})
   assert.equal(started.status,200)
-  assert.equal(started.data.tasks[0].status,'doing')
-  assert.equal(started.data.tasks[0].phase,'D')
+  const startedTask=started.data.tasks.find(item=>item.id===task.id)
+  assert.equal(startedTask.status,'doing')
+  assert.equal(startedTask.phase,'D')
 
   const submitted=await app.request('POST',`/api/tasks/${task.id}/action`,{
    role:'quality',actor:'测试质检',action:'lean_submit',actualValue:97.5,
    evidence:'已复盘3通低满意录音，完成服务四动作校准，并抽检4通新录音。',
   })
   assert.equal(submitted.status,200)
-  assert.equal(submitted.data.tasks[0].status,'pending_verification')
-  assert.equal(submitted.data.tasks[0].ownerRole,'manager')
-  assert.equal(submitted.data.tasks[0].metricSnapshots.at(-1).actual,97.5)
+  const submittedTask=submitted.data.tasks.find(item=>item.id===task.id)
+  assert.equal(submittedTask.status,'pending_verification')
+  assert.equal(submittedTask.ownerRole,'manager')
+  assert.equal(submittedTask.metricSnapshots.at(-1).actual,97.5)
 
   const improvement=await app.request('GET',`/api/tasks/${task.id}/improvement?role=manager`)
   assert.equal(improvement.status,200)
@@ -276,11 +452,107 @@ test('精益任务支持AI目标建议、跨岗位指派、数据辅助验收和
    standardizedAction:'将服务四动作校准纳入班组每日两通录音抽检，并连续跟踪七日。',
   })
   assert.equal(closed.status,200)
-  assert.equal(closed.data.tasks[0].status,'closed')
-  assert.equal(closed.data.tasks[0].phase,'A')
-  assert.equal(closed.data.tasks[0].progress,100)
-  assert.equal(closed.data.tasks[0].nodes.every(node=>node.status==='completed'),true)
-  assert.match(closed.data.tasks[0].standardizedAction,/连续跟踪七日/)
+  const closedTask=closed.data.tasks.find(item=>item.id===task.id)
+  assert.equal(closedTask.status,'closed')
+  assert.equal(closedTask.phase,'A')
+  assert.equal(closedTask.progress,100)
+  assert.equal(closedTask.nodes.every(node=>node.status==='completed'),true)
+  assert.match(closedTask.standardizedAction,/连续跟踪七日/)
+
+  const archived=await app.request('POST',`/api/tasks/${task.id}/action`,{
+   role:'manager',actor:'测试经理',action:'lean_archive',
+   comment:'改善目标稳定达成，录音与辅导证据完整，转入标准化案例档案。',
+  })
+  assert.equal(archived.status,200)
+  const archivedTask=archived.data.tasks.find(item=>item.id===task.id)
+  assert.ok(archivedTask.archivedAt)
+  assert.ok(archivedTask.archivedBy)
+  assert.equal(archivedTask.managementRecords[0].type,'archive')
+
+  const reopened=await app.request('POST',`/api/tasks/${task.id}/action`,{
+   role:'manager',actor:'测试经理',action:'lean_reopen',
+   comment:'后续抽检再次发现同类服务动作缺失，需重新进入改善并连续验证三日。',
+  })
+  assert.equal(reopened.status,200)
+  const reopenedTask=reopened.data.tasks.find(item=>item.id===task.id)
+  assert.equal(reopenedTask.status,'returned_to_origin')
+  assert.equal(reopenedTask.ownerRole,'quality')
+  assert.equal(reopenedTask.archivedAt,'')
+  assert.equal(reopenedTask.reopenCount,1)
+  assert.equal(reopenedTask.nodes.find(node=>node.code==='execute').status,'active')
+  assert.equal(reopenedTask.managementRecords[0].type,'reopen')
+
+  const requestCreated=await app.request('POST','/api/tasks',{
+   ...payload,source:'role-request',role:'employee',targetRole:'training',owner:'刘颖（培训主管）',
+   title:'申请续约业务口径专项培训',issueCategory:'业务能力',
+   issueLocation:'客服专员李倩 JR10776 / 续约业务受理场景',
+   problem:'续约业务最新口径掌握不完整，已影响一次解决，需要培训岗位提供案例讲解和通关验证。',
+   target:'完成续约业务专项培训并达到通关标准',
+   successCriteria:'员工完成培训、案例演练得分不低于90分，并由员工本人确认培训需求已解决。',
+   actionPlan:'培训岗位安排口径讲解、案例演练和一次通关测试，并反馈培训结果。',
+  })
+  assert.equal(requestCreated.status,201)
+  const requestTask=requestCreated.data.tasks[0]
+  assert.equal(requestTask.type,'岗位需求')
+  assert.equal(requestTask.sourceLabel,'岗位任务需求')
+  assert.equal(requestTask.initiatorRole,'employee')
+  assert.equal(requestTask.executionOwnerRole,'training')
+  assert.equal(requestTask.verificationRole,'employee')
+  assert.ok(requestCreated.data.notifications.some(item=>item.role==='training'&&item.title.includes('任务需求待响应')))
+
+  const requestForbidden=await app.request('POST','/api/tasks',{
+   ...payload,source:'role-request',role:'employee',targetRole:'director',owner:'运营总监',
+  })
+  assert.equal(requestForbidden.status,403)
+  const managerRequestCreated=await app.request('POST','/api/tasks',{
+   ...payload,source:'role-request',role:'manager',targetRole:'supervisor',owner:'前台客服主管',
+   title:'经理发起班组满意率改善需求',
+  })
+  assert.equal(managerRequestCreated.status,201)
+  assert.equal(managerRequestCreated.data.tasks[0].type,'岗位需求')
+  assert.equal(managerRequestCreated.data.tasks[0].initiatorRole,'manager')
+  assert.equal(managerRequestCreated.data.tasks[0].executionOwnerRole,'supervisor')
+  assert.equal(managerRequestCreated.data.tasks[0].verificationRole,'manager')
+  assert.equal((await app.request('POST',`/api/tasks/${requestTask.id}/action`,{role:'training',action:'lean_start'})).status,200)
+  const requestSubmitted=await app.request('POST',`/api/tasks/${requestTask.id}/action`,{
+   role:'training',action:'lean_submit',actualValue:92,
+   evidence:'已完成续约口径讲解、三类案例演练和通关测试，员工测试得分92分。',
+  })
+  assert.equal(requestSubmitted.status,200)
+  assert.equal(requestSubmitted.data.tasks.find(item=>item.id===requestTask.id).ownerRole,'employee')
+  const requesterClosed=await app.request('POST',`/api/tasks/${requestTask.id}/action`,{
+   role:'employee',action:'lean_verify_success',
+   comment:'已完成专项学习和通关测试，续约业务疑问已解决，可以独立受理。',
+   standardizedAction:'后续遇到口径变化先查阅知识库，再通过任务需求申请专项支持。',
+  })
+  assert.equal(requesterClosed.status,200)
+  assert.equal(requesterClosed.data.tasks.find(item=>item.id===requestTask.id).status,'closed')
+ }finally{await app.close()}
+})
+
+test('班组看数按工时、利用率和通话均长拆解产能Gap并支持AI降级',async()=>{
+ const app=await startServer()
+ try{
+  const member={
+   jobNo:'JR-ATTR-001',name:'归因测试员工',team:'普通客服一区·8班',
+   responses:{actual:86,target:136},cph:{actual:12.29,target:17},
+   workHours:{actual:7,target:8},utilization:{actual:75,target:85},
+   handleTime:{actual:210,target:180},busyRest:{actual:13.5,target:7},
+   sourceImpacts:{workHours:-17,utilization:-14,talkTime:-10,afterCall:-5,busyRest:-6},
+  }
+  const result=await app.request('POST','/api/ai/team-attribution',{role:'leader',member})
+  assert.equal(result.status,200)
+  assert.equal(result.data.provider,'system')
+  assert.equal(result.data.calculation.responseGap,-50)
+  assert.equal(result.data.calculation.formulaTarget,136)
+  assert.equal(result.data.calculation.formulaActual,90)
+  assert.equal(result.data.drivers.find(item=>item.code==='work_hours').status,'risk')
+  assert.equal(result.data.drivers.find(item=>item.code==='utilization').status,'risk')
+  assert.equal(result.data.drivers.find(item=>item.code==='handle_time').status,'risk')
+  assert.match(result.data.conclusion,/首要负向因素为签入工时/)
+  assert.match(result.data.utilizationFormula,/通话总时长/)
+  const forbidden=await app.request('POST','/api/ai/team-attribution',{role:'employee',member})
+  assert.equal(forbidden.status,403)
  }finally{await app.close()}
 })
 
@@ -485,44 +757,63 @@ test('题库场次、员工考试、班长验效、员工建议与成长评估�
  }finally{await app.close()}
 })
 
-test('培训面谈支持多岗位发起、责任人回执和发起人验收闭环',async()=>{
+test('培训面谈仅由质检培训班长发起，员工执行并支持管理岗位分节点评论',async()=>{
  const app=await startServer()
  try{
+  const plannedAt=new Date(Date.now()+60*60*1000).toISOString()
   const dueAt=new Date(Date.now()+24*60*60*1000).toISOString()
-  const trainingCreated=await app.request('POST','/api/development/cases',{
-   role:'training',type:'training',title:'测试业务规范专项训练',employeeId:'JR10776',responderRole:'employee',dueAt,
+  const verificationDueAt=new Date(Date.now()+48*60*60*1000).toISOString()
+  const payload={
+   type:'training',title:'测试业务规范专项训练',employeeId:'JR10776',responderRole:'employee',plannedAt,dueAt,verificationDueAt,
    reason:'质检发现业务规则解释存在重复差错，需要面向员工完成针对性训练。',
-   goal:'员工完成课程与两通录音复盘，后续抽查同类问题不再发生。',
+   goal:'员工能够独立准确完成业务解释，避免同类差错再次发生。',
+   actionPlan:'员工完成课程、两个案例演练和两通本人录音复盘，并反馈学习结果。',
+   successCriteria:'通关测试不低于90分，后续抽查两通录音均无同类问题。',
+  }
+  const trainingCreated=await app.request('POST','/api/development/cases',{
+   role:'training',...payload,
   })
   assert.equal(trainingCreated.status,201)
   const trainingCase=trainingCreated.data.learning.developmentCases.find(item=>item.title==='测试业务规范专项训练')
   assert.equal(trainingCase.status,'pending_acceptance')
   assert.equal(trainingCase.ownerRole,'employee')
+  assert.equal(trainingCase.verificationRole,'training')
+  assert.equal(trainingCase.actionPlan,payload.actionPlan)
+  assert.equal(trainingCase.successCriteria,payload.successCriteria)
+  assert.equal(trainingCase.verificationDueAt,verificationDueAt)
+
+  const employeeForbidden=await app.request('POST','/api/development/cases',{role:'employee',...payload,title:'员工不允许发起'})
+  assert.equal(employeeForbidden.status,403)
+  const supervisorForbidden=await app.request('POST','/api/development/cases',{role:'supervisor',...payload,title:'主管不允许发起'})
+  assert.equal(supervisorForbidden.status,403)
+  const qualityCreated=await app.request('POST','/api/development/cases',{role:'quality',...payload,type:'interview',title:'质检规范问题面谈'})
+  assert.equal(qualityCreated.status,201)
+  const leaderCreated=await app.request('POST','/api/development/cases',{role:'leader',...payload,type:'interview',title:'班长目标改善面谈'})
+  assert.equal(leaderCreated.status,201)
+
+  const planComment=await app.request('POST',`/api/development/cases/${trainingCase.id}/comments`,{role:'supervisor',nodeCode:'plan',comment:'目标清晰，建议同步记录员工当前基线，便于验收时判断真实改善。'})
+  assert.equal(planComment.status,201)
+  assert.equal(planComment.data.learning.developmentCases.find(item=>item.id===trainingCase.id).comments[0].nodeCode,'plan')
 
   const accepted=await app.request('POST',`/api/development/cases/${trainingCase.id}/action`,{role:'employee',action:'accept',comment:'已接收任务并确认今日完成'})
   assert.equal(accepted.status,200)
   assert.equal(accepted.data.learning.developmentCases.find(item=>item.id===trainingCase.id).status,'in_progress')
+  const executeComment=await app.request('POST',`/api/development/cases/${trainingCase.id}/comments`,{role:'manager',nodeCode:'execute',comment:'执行时请使用本人真实录音，确保培训动作与现场问题直接对应。'})
+  assert.equal(executeComment.status,201)
   const submitted=await app.request('POST',`/api/development/cases/${trainingCase.id}/action`,{role:'employee',action:'submit',comment:'已完成课程学习和两通录音复盘，关键业务步骤可以独立执行。'})
   assert.equal(submitted.status,200)
   assert.equal(submitted.data.learning.developmentCases.find(item=>item.id===trainingCase.id).ownerRole,'training')
+  const verifyComment=await app.request('POST',`/api/development/cases/${trainingCase.id}/comments`,{role:'director',nodeCode:'verify',comment:'验收要同时核对通关成绩和新录音表现，不能只以完成学习作为关闭依据。'})
+  assert.equal(verifyComment.status,201)
   assert.equal((await app.request('POST',`/api/development/cases/${trainingCase.id}/action`,{role:'quality',action:'verify_success',comment:'质检岗位尝试越权验收'})).status,409)
   const verified=await app.request('POST',`/api/development/cases/${trainingCase.id}/action`,{role:'training',action:'verify_success',comment:'结果和证据符合训练目标，验收关闭。'})
   assert.equal(verified.status,200)
   assert.equal(verified.data.learning.developmentCases.find(item=>item.id===trainingCase.id).status,'closed')
-
-  const employeeCreated=await app.request('POST','/api/development/cases',{
-   role:'employee',type:'interview',title:'测试员工主动面谈需求',employeeId:'JR10776',responderRole:'hrbp',dueAt,
-   reason:'希望就个人排班适应和后续发展方向进行一次结构化沟通。',
-   goal:'HRBP完成沟通并给出明确回执，员工确认问题得到解决后关闭。',
-  })
-  assert.equal(employeeCreated.status,201)
-  const employeeCase=employeeCreated.data.learning.developmentCases.find(item=>item.title==='测试员工主动面谈需求')
-  assert.equal(employeeCase.verificationRole,'employee')
-  assert.equal((await app.request('POST',`/api/development/cases/${employeeCase.id}/action`,{role:'hrbp',action:'accept',comment:'已安排明日十点进行沟通'})).status,200)
-  assert.equal((await app.request('POST',`/api/development/cases/${employeeCase.id}/action`,{role:'hrbp',action:'submit',comment:'已完成沟通，明确排班适应方案和后续能力发展建议。'})).status,200)
-  const employeeVerified=await app.request('POST',`/api/development/cases/${employeeCase.id}/action`,{role:'employee',action:'verify_success',comment:'已收到明确回执，确认本次需求解决。'})
-  assert.equal(employeeVerified.status,200)
-  assert.equal(employeeVerified.data.learning.developmentCases.find(item=>item.id===employeeCase.id).status,'closed')
+  const closeComment=await app.request('POST',`/api/development/cases/${trainingCase.id}/comments`,{role:'manager',nodeCode:'close',comment:'将本次有效训练动作纳入班组同类问题标准课程和复检清单。'})
+  assert.equal(closeComment.status,201)
+  const closedCase=closeComment.data.learning.developmentCases.find(item=>item.id===trainingCase.id)
+  assert.equal(closedCase.comments.length,4)
+  assert.ok(closedCase.history.some(item=>item.action.includes('闭环固化')))
  }finally{await app.close()}
 })
 
@@ -556,6 +847,11 @@ test('员工支持请求进入班长PDCA并由员工确认闭环',async()=>{
   assert.equal(submitted.data.tasks[0].status,'pending_verification')
   assert.equal(submitted.data.tasks[0].ownerRole,'employee')
   assert.ok(submitted.data.notifications.some(item=>item.role==='employee'&&item.title.includes('待员工确认')))
+  const improvement=await app.request('GET',`/api/tasks/${task.id}/improvement?role=employee`)
+  assert.equal(improvement.status,200)
+  assert.equal(improvement.data.metric.code,'fcr')
+  assert.equal(typeof improvement.data.metric.unit,'string')
+  assert.match(improvement.data.conclusion,/指标数据|目标|改善/)
 
   const returned=await app.request('POST',`/api/tasks/${task.id}/action`,{role:'employee',actor:'李倩',action:'employee_reopen_support',comment:'还需要一份四步确认话术模板'})
   assert.equal(returned.status,200)
@@ -831,15 +1127,21 @@ test('主管生产调度与总监经营治理形成跨角色闭环',async()=>{
   assert.equal(routeClosed.data.governance.skillRoutes[0].status,'closed')
   assert.ok(routeClosed.data.notifications.some(item=>item.role==='manager'&&item.title.includes('验效通过')))
 
-  const budget=baseline.governance.budgets[0],contract=baseline.governance.contracts[0]
+  const budget=baseline.governance.budgets[0],contracts=baseline.governance.contracts
+  assert.equal(contracts.length,3)
+  assert.deepEqual(contracts.map(item=>({project:item.project,amount:item.amount,billingMode:item.billingMode,startDate:item.startDate,endDate:item.endDate,status:item.status})),[
+   {project:'10015',amount:7500,billingMode:'固定合同额',startDate:'2025-09-01',endDate:'2027-08-31',status:'active'},
+   {project:'10010',amount:6000,billingMode:'固定合同额',startDate:'2025-09-01',endDate:'2027-08-31',status:'active'},
+   {project:'河北营销',amount:null,billingMode:'按佣金结费',startDate:'2025-09-01',endDate:'2027-08-31',status:'active'},
+  ])
   assert.equal((await app.request('POST',`/api/governance/budgets/${budget.id}/action`,{role:'quality',action:'director_approve',comment:'越权'})).status,403)
   const budgetApproved=await app.request('POST',`/api/governance/budgets/${budget.id}/action`,{role:'director',action:'director_approve',comment:'同意滚动预测，经理每日回传回款、成本和毛利恢复进展。'})
   assert.equal(budgetApproved.status,200)
   assert.equal(budgetApproved.data.governance.budgets[0].status,'active')
-  const contractApproved=await app.request('POST',`/api/governance/contracts/${contract.id}/action`,{role:'director',action:'director_approve',comment:'同意进入客户沟通，按批准的考核扣款口径和人员单价边界谈判。'})
-  assert.equal(contractApproved.status,200)
-  assert.equal(contractApproved.data.governance.contracts[0].status,'approved')
-  assert.equal(contractApproved.data.governance.contracts[0].milestones.find(item=>item.name==='条款决策').status,'done')
+  const contractDenied=await app.request('POST',`/api/governance/contracts/${contracts[0].id}/action`,{role:'director',action:'director_approve',comment:'尝试审批合同。'})
+  assert.equal(contractDenied.status,403)
+  assert.match(contractDenied.data.error,/只读信息.*仅可查阅.*到期提醒/)
+  assert.equal((await app.request('POST',`/api/governance/contracts/${contracts[0].id}/action`,{role:'manager',action:'manager_submit',comment:'尝试重提合同。'})).status,403)
 
   const meeting=baseline.governance.meetings[0]
   const published=await app.request('POST',`/api/governance/meetings/${meeting.id}/action`,{role:'director',action:'publish',summary:'本次会议完成经营预测、现场覆盖和人员稳定复盘，明确结费差异清单与技能调度验效两项行动。'})
@@ -906,6 +1208,11 @@ test('用户角色权限服务持久化、哈希密码并执行服务端RBAC',as
   assert.equal(baseline.status,200)
   assert.equal(baseline.data.users.length,2)
   assert.equal(baseline.data.roles.some(role=>role.id==='system-admin'),true)
+  assert.equal(baseline.data.organization.source.totalMembers,575)
+  assert.equal(baseline.data.organization.projects.find(project=>project.id==='10015升投').count,283)
+  assert.equal(baseline.data.organization.projects.find(project=>project.id==='联通河北').count,264)
+  assert.equal(baseline.data.organization.members.some(member=>member.jobNo==='JZ053684'&&member.jobTitle==='运营管理总监'),true)
+  assert.equal(baseline.data.organization.members.some(member=>'phone' in member),false)
   assert.equal(JSON.stringify(baseline.data).includes('passwordHash'),false)
   assert.equal(baseline.data.users[0].password,'')
 
@@ -1016,7 +1323,7 @@ test('业务状态按岗位最小可见且普通账号不能伪造角色执行�
   },{cookie:supervisorCookie})
   assert.equal(spoofQuality.status,403)
   assert.equal(spoofQuality.data.code,'ROLE_CONTEXT_FORBIDDEN')
-  const spoofDirector=await app.request('POST','/api/governance/budgets/BG-202607-10015/action',{role:'director',action:'director_approve',comment:'伪造总监审批'},{cookie:supervisorCookie})
+  const spoofDirector=await app.request('POST','/api/governance/budgets/BG-2026H1-10015/action',{role:'director',action:'director_approve',comment:'伪造总监审批'},{cookie:supervisorCookie})
   assert.equal(spoofDirector.status,403)
   assert.equal(spoofDirector.data.code,'ROLE_CONTEXT_FORBIDDEN')
 
@@ -1037,6 +1344,7 @@ test('业务状态按岗位最小可见且普通账号不能伪造角色执行�
   assert.equal(employeeState.data.governance.shiftPlans.length,0)
   assert.equal(employeeState.data.governance.budgets.length,0)
   assert.equal(employeeState.data.governance.crossDepartmentItems.length,0)
+  assert.equal(employeeState.data.financialPerformance.metrics.length,0)
   assert.equal(employeeState.data.audit.length,0)
   assert.ok(employeeState.data.notifications.every(item=>item.role==='employee'))
   assert.equal((await app.request('GET','/api/reports/catalog',undefined,{cookie:employeeCookie})).status,403)

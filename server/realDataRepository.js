@@ -44,6 +44,12 @@ const latestTeamRows=async()=>{
    QTYCXJJL_yjzdc AS monthlyFcr,QTYCXJJL_yjzmb AS monthlyFcrTarget,
    ZMXXZB_rdc AS busyRest,ZMXXZB_rmb AS busyRestTarget,
    twoxscfldl_rdc AS repeatCall,twoxscfldl_rmb AS repeatCallTarget,
+   QRSC_rdc AS workHours,QRSC_rmb AS workHoursTarget,
+   THLYL_rdc AS utilization,THLYL_rmb AS utilizationTarget,
+   AHT_rdc AS handleTime,AHT_rmb AS handleTimeTarget,
+   thzsc_r AS talkSeconds,zt_gzzsz_rdc AS totalWorkSeconds,
+   QRSC_yxcn_r AS workHoursImpact,THLYL_yxcn_r AS utilizationImpact,
+   ATT_yxcn_r AS talkTimeImpact,ACW_yxcn_r AS afterCallImpact,ZMXX_yxcn_r AS busyRestImpact,
    valid_conv_vol_ach_mtd AS validMarketing,opened_vol_ach_mtd AS broadbandMarketing,
    conv_vol_ach_mtd AS marketingVolume,sjjzrq AS dataDate
   FROM ${SOURCE_SCHEMA}.bpo_dws_base_pord_sum
@@ -58,6 +64,14 @@ const latestTeamRows=async()=>{
   const fcr=percentValue(row.fcr),fcrTarget=percentValue(row.fcrTarget)
   const busyRest=percentValue(row.busyRest),busyRestTarget=percentValue(row.busyRestTarget)
   const repeatCall=percentValue(row.repeatCall),repeatCallTarget=percentValue(row.repeatCallTarget)
+  const talkSeconds=number(row.talkSeconds),totalWorkSeconds=number(row.totalWorkSeconds)
+  const sourceUtilization=percentValue(row.utilization)
+  const utilization=talkSeconds!=null&&totalWorkSeconds?talkSeconds/totalWorkSeconds*100:sourceUtilization
+  const utilizationTarget=percentValue(row.utilizationTarget)
+  const workHours=number(row.workHours)??(totalWorkSeconds==null?null:totalWorkSeconds/3600)
+  const workHoursTarget=number(row.workHoursTarget)
+  const handleTime=number(row.handleTime),handleTimeTarget=number(row.handleTimeTarget)
+  const calculatedResponses=(hours,rate,seconds)=>hours!=null&&rate!=null&&seconds?round(hours*3600*(rate/100)/seconds,2):null
   const attention=[
    targetStatus(responses,responseTarget),
    targetStatus(cph,cphTarget),
@@ -76,7 +90,21 @@ const latestTeamRows=async()=>{
     satisfaction:metric('人工服务满意率',satisfaction,satisfactionTarget,'%'),
     fcr:metric('一次解决率',fcr,fcrTarget,'%'),
     busyRest:metric('置忙小休占比',busyRest,busyRestTarget,'%','lower'),
-    repeatCall:metric('2小时重复来电率',repeatCall,repeatCallTarget,'%','lower'),
+   repeatCall:metric('2小时重复来电率',repeatCall,repeatCallTarget,'%','lower'),
+   },
+   productivityDrivers:{
+    formula:'目标产能 = 目标工时 × 目标员工利用率 ÷ 目标通话均长',
+    workHours:metric('签入工时',workHours,workHoursTarget,'h'),
+    utilization:metric('员工利用率',utilization,utilizationTarget,'%'),
+    handleTime:metric('通话均长',handleTime,handleTimeTarget,'s','lower'),
+    busyRest:metric('示忙小休率',busyRest,busyRestTarget,'%','lower'),
+    talkSeconds:round(talkSeconds,0),totalWorkSeconds:round(totalWorkSeconds,0),
+    calculatedActualResponses:calculatedResponses(workHours,utilization,handleTime),
+    calculatedTargetResponses:calculatedResponses(workHoursTarget,utilizationTarget,handleTimeTarget),
+    sourceImpacts:{
+     workHours:round(number(row.workHoursImpact)),utilization:round(number(row.utilizationImpact)),
+     talkTime:round(number(row.talkTimeImpact)),afterCall:round(number(row.afterCallImpact)),busyRest:round(number(row.busyRestImpact)),
+    },
    },
    monthly:{
     responses:metric('月度人工应答量',number(row.monthlyResponses),number(row.monthlyResponseTarget),'通'),

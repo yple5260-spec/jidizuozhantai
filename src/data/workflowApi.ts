@@ -19,6 +19,14 @@ export interface WorkflowTask {
   problem?:string;issueCategory?:string;issueLocation?:string;actionPlan?:string
   plannedStartAt?:string;submitDueAt?:string;verificationDueAt?:string;startedAt?:string;submittedAt?:string;verifiedAt?:string;closedAt?:string
   standardizedAction?:string
+ archivedAt?:string;archivedBy?:string;archiveNote?:string;nextFollowUpAt?:string;lastFollowUpAt?:string
+ interventionCount?:number;reopenCount?:number;interventionRequirement?:string
+ slaStatus?:'not_applicable'|'archived'|'closed'|'follow_up_due'|'overdue_verification'|'overdue_execution'|'due_soon'|'on_track';slaDeadline?:string
+  managementRecords?:{
+   id:string;type:'follow_up'|'intervention'|'reassign'|'deadline_change'|'archive'|'reopen'|'comment'
+   actorRole:string;actor:string;note:string;createdAt:string;nextFollowUpAt?:string
+   before?:Record<string,string>;after?:Record<string,string>
+  }[]
   metric?:{code:string;label:string;baseline:number|null;target:number|null;unit:string;direction:'higher'|'lower'}
   nodes?:{id:string;code:string;name:string;target:string;ownerRole:string;owner:string;plannedAt:string;completedAt:string;status:'pending'|'active'|'completed';sequence:number;result:string;completedBy?:string;completedByRole?:string}[]
   attachments?:{id:string;taskId:string;nodeCode:string;fileName:string;mimeType:string;fileSize:number;uploadedBy:string;uploadedRole:string;createdAt:string}[]
@@ -133,14 +141,20 @@ export interface GrowthReview {
  status:'planned'|'training_review'|'leader_pending'|'closed';trainingComment:string;leaderComment:string
  metrics:{label:string;target:number;actual:number;unit:string;higherBetter:boolean}[];history:{at:string;actor:string;action:string}[]
 }
-export type DevelopmentRole='employee'|'leader'|'supervisor'|'quality'|'training'|'hrbp'
+export type DevelopmentRole='employee'|'leader'|'supervisor'|'quality'|'training'|'hrbp'|'manager'|'director'
 export type DevelopmentStatus='pending_acceptance'|'in_progress'|'pending_verification'|'returned'|'closed'
+export type DevelopmentCommentNode='plan'|'execute'|'verify'|'close'
+export interface DevelopmentComment {
+ id:string;nodeCode:DevelopmentCommentNode;nodeName:string;role:DevelopmentRole;actor:string;content:string;createdAt:string
+}
 export interface DevelopmentCase {
  id:string;type:'training'|'interview';title:string;reason:string;goal:string
  employeeId:string;employeeName:string;team:string
  initiatorRole:DevelopmentRole;initiatorName:string;responderRole:DevelopmentRole;responderName:string
  ownerRole:DevelopmentRole;verificationRole:DevelopmentRole;status:DevelopmentStatus
- dueAt:string;createdAt:string;acknowledgement:string;result:string;verificationComment:string
+ plannedAt?:string;dueAt:string;verificationDueAt?:string;actionPlan?:string;successCriteria?:string
+ createdAt:string;startedAt?:string;submittedAt?:string;closedAt?:string
+ acknowledgement:string;result:string;verificationComment:string;comments?:DevelopmentComment[]
  history:{at:string;actor:string;action:string}[]
 }
 export interface LearningState {
@@ -189,13 +203,13 @@ export interface GovernanceSkillRoute {
  ownerRole:string;owner:string;dueAt:string;result:string;history:GovernanceHistory[]
 }
 export interface GovernanceBudget {
- id:string;month:string;project:string;revenueTarget:number;costBudget:number;forecastRevenue:number;forecastCost:number;targetMargin:number
+ id:string;dataVersion?:string;month:string;project:string;revenueTarget:number;costBudget:number;forecastRevenue:number;forecastCost:number;targetMargin:number
  forecastMargin:number;status:'manager_draft'|'director_pending'|'active'|'returned'|'closed';ownerRole:string;owner:string;dueAt:string
  managerComment:string;directorComment:string;history:GovernanceHistory[]
 }
 export interface GovernanceContract {
- id:string;customer:string;project:string;amount:number;startDate:string;endDate:string;renewalDue:string
- status:'manager_draft'|'director_pending'|'approved'|'returned'|'closed';ownerRole:string;owner:string;risk:'low'|'medium'|'high'
+ id:string;customer:string;project:string;amount:number|null;billingMode:string;startDate:string;endDate:string;renewalDue:string
+ status:'active'|'expired'|'manager_draft'|'director_pending'|'approved'|'returned'|'closed';ownerRole:string;owner:string;risk:'low'|'medium'|'high'
  managerComment:string;directorComment:string;milestones:{name:string;status:'done'|'active'|'pending';dueAt:string}[];history:GovernanceHistory[]
 }
 export interface GovernanceMeetingAction {
@@ -213,10 +227,51 @@ export interface GovernanceState {
  version:1;shiftPlans:GovernanceShiftPlan[];skillRoutes:GovernanceSkillRoute[];budgets:GovernanceBudget[];contracts:GovernanceContract[]
  meetings:GovernanceMeeting[];crossDepartmentItems:GovernanceCrossDepartmentItem[]
 }
+export interface ExcellenceEmployeeAchievement {id:string;jobNo:string;name:string;team:string;metric:string;unit:string;target:number;actual:number;qualityScore:number;effectiveTaskCount:number}
+export interface ExcellenceExperience {id:string;title:string;category:string;sourceTaskId:string;sourceTaskTitle:string;ownerJobNo:string;ownerName:string;team:string;metric:string;unit:string;direction:'higher'|'lower';baseline:number;target:number;actual:number;actionSummary:string;steps:string[];evidence:string[];verifiedBy:string;verifiedAt:string;aiPublished:boolean;publishedAt:string;keywords:string[];invocationCount:number}
+export interface ExcellenceRecording {id:string;title:string;callId:string;employeeJobNo:string;employeeName:string;team:string;business:string;durationSeconds:number;qualityScore:number;targetScore:number;submittedBy:string;submittedAt:string;aiSummary:string;highlights:string[];phraseIds:string[];aiPublished:boolean}
+export interface ExcellencePhrase {id:string;text:string;scenario:string;sourceRecordingId:string;employeeName:string;qualityScore:number;tags:string[];useCount:number}
+export interface ExcellenceState {version:1;evaluation:{period:string;topPercent:number;rule:string;minimumEvidenceTasks:number};employeeAchievements:ExcellenceEmployeeAchievement[];experiences:ExcellenceExperience[];recordings:ExcellenceRecording[];phrases:ExcellencePhrase[]}
+export interface FinancialMetric {code:string;name:string;budget:number[];actual:number[]}
+export interface FinancialPerformanceState {
+ version:1;scope:string;asOf:string;months:string[];budgetMonths:string[]
+ sources:{budget:{fileName:string;section:string;period:string};actual:{fileName:string;section:string;period:string}}
+ dataQuality:{status:string;message:string};metrics:FinancialMetric[]
+ recoveryPlan:{priority:number;title:string;owner:string;target:string;rationale:string}[]
+}
+export interface MorningBriefingTeam {team:string;leader:string;supervisor:string;planned:number;held:number;averageScore:number;latestScore:number;quality:string;needsHelp:boolean;diagnosis:string}
+export interface MorningBriefingSchedule {id:string;date:string;time:string;team:string;leader:string;title:string;focus:string[];source:string;status:'draft'|'issued'|'completed';issuedBy:string;issuedAt:string;recording:{fileName:string;mimeType?:string;fileSize?:number;storageKey?:string;durationSeconds:number;recordedAt:string;aiSummary:string}|null;qualityScore:number;qualitySummary:string}
+export interface MorningBriefingSuggestion {id:string;sourceRole:'quality'|'training';sourceName:string;title:string;content:string;targetTeam:string;proposedDate:string;status:'pending'|'adopted'|'rejected';supervisorComment:string;createdAt:string}
+export interface MorningBriefingState {version:1;teams:MorningBriefingTeam[];schedules:MorningBriefingSchedule[];suggestions:MorningBriefingSuggestion[];todayBulletin:{date:string;title:string;points:string[];targets:string[];businessUpdate:string}}
 export interface WorkflowState {
+ persistenceRevision?:number
  meta:{lastRefresh:string;nextRefresh:string;refreshIntervalMinutes:number;batchNo:number;sourceMode:string}
  org:{base:string;business:string;area:string;approvalChain:string[]}
- events:WorkflowEvent[];tasks:WorkflowTask[];notifications:WorkflowNotice[];audit:{at:string;actor:string;action:string}[];trainingReports:TrainingReportRecord[];training:TrainingState;quality:QualityState;people:PeopleState;learning:LearningState;governance:GovernanceState;hrbpCases:HrbpCaseRecord[];workforce:WorkforceState
+ events:WorkflowEvent[];tasks:WorkflowTask[];notifications:WorkflowNotice[];audit:{at:string;actor:string;action:string}[];trainingReports:TrainingReportRecord[];training:TrainingState;quality:QualityState;excellence:ExcellenceState;financialPerformance:FinancialPerformanceState;morningBriefings:MorningBriefingState;people:PeopleState;learning:LearningState;governance:GovernanceState;hrbpCases:HrbpCaseRecord[];workforce:WorkforceState
+}
+export interface WorkflowTaskActionPatch {
+ patchType:'task_action';persistenceRevision?:number;task:WorkflowTask|null;tasks:WorkflowTask[]
+ event:WorkflowEvent|null;events:WorkflowEvent[];notifications:WorkflowNotice[]
+}
+export type WorkflowMutationResult=WorkflowState|WorkflowTaskActionPatch
+
+export const applyWorkflowMutation=(current:WorkflowState|null,result:WorkflowMutationResult):WorkflowState=>{
+ if(!('patchType' in result))return result
+ if(!current)throw new Error('任务状态尚未加载，请刷新后重试')
+ const task=result.task
+ const event=result.event
+ const tasks=task
+  ?current.tasks.some(item=>item.id===task.id)?current.tasks.map(item=>item.id===task.id?task:item):[task,...current.tasks]
+  :current.tasks
+ const events=event
+  ?current.events.some(item=>item.id===event.id)?current.events.map(item=>item.id===event.id?event:item):[event,...current.events]
+  :current.events
+ const noticeIds=new Set(result.notifications.map(item=>item.id))
+ return {
+  ...current,
+  ...(result.persistenceRevision===undefined?{}:{persistenceRevision:result.persistenceRevision}),
+  tasks,events,notifications:[...result.notifications,...current.notifications.filter(item=>!noticeIds.has(item.id))],
+ }
 }
 
 class WorkflowHttpError extends Error {
@@ -225,7 +280,7 @@ class WorkflowHttpError extends Error {
 }
 
 const sleep=(ms:number)=>new Promise(resolve=>setTimeout(resolve,ms))
-const call=async(path:string,options:RequestInit={},retries=options.method?0:2):Promise<WorkflowState>=>{
+const call=async<T=WorkflowState>(path:string,options:RequestInit={},retries=options.method?0:2):Promise<T>=>{
  let lastError:Error=new Error('请求失败')
  for(let attempt=0;attempt<=retries;attempt++){
   try{
@@ -235,7 +290,7 @@ const call=async(path:string,options:RequestInit={},retries=options.method?0:2):
    if(text.trim())try{data=JSON.parse(text)}catch{throw new WorkflowHttpError(r.status,`业务服务响应格式异常（HTTP ${r.status}）`)}
    if(!r.ok) throw new WorkflowHttpError(r.status,data.error||`请求失败（HTTP ${r.status}）`)
    if(!text.trim()) throw new Error(`业务服务返回空响应（HTTP ${r.status}）`)
-   return data
+   return data as T
   }catch(error){
    lastError=error instanceof Error?error:new Error('请求失败')
    if(error instanceof WorkflowHttpError&&error.status>=400&&error.status<500)throw error
@@ -248,9 +303,17 @@ export const workflowApi={
  get:()=>call('/api/state'),
  reset:()=>call('/api/reset',{method:'POST'}),
  refresh:()=>call('/api/refresh',{method:'POST'}),
+ excellenceMatches:(query:string)=>call<{taskId:string;query:string;matches:(ExcellenceExperience&{matchScore:number;matchedKeywords:string[]})[]}>(`/api/excellence/matches?query=${encodeURIComponent(query)}`),
+ excellenceExperienceAction:(id:string,role:'director'|'manager'|'supervisor'|'quality'|'training',action:'publish_ai'|'withdraw_ai')=>call(`/api/excellence/experiences/${id}/action`,{method:'POST',body:JSON.stringify({role,action})}),
+ createExcellenceRecording:(payload:{role:'quality';title:string;callId:string;employeeJobNo:string;employeeName:string;team:string;business:string;durationSeconds:number;qualityScore:number;targetScore:number;notes:string;phrase:string;aiPublished:boolean})=>call('/api/excellence/recordings',{method:'POST',body:JSON.stringify(payload)}),
+ morningSuggestionCreate:(payload:{role:'quality'|'training';title:string;content:string;targetTeam:string;proposedDate:string})=>call('/api/morning-briefings/suggestions',{method:'POST',body:JSON.stringify(payload)}),
+ morningSuggestionAction:(id:string,action:'adopt'|'reject',comment:string)=>call(`/api/morning-briefings/suggestions/${id}/action`,{method:'POST',body:JSON.stringify({role:'supervisor',action,comment})}),
+ morningScheduleAction:(id:string,role:'supervisor'|'leader',action:'save'|'issue'|'complete',payload:Record<string,unknown>={})=>call(`/api/morning-briefings/schedules/${id}/action`,{method:'POST',body:JSON.stringify({role,action,...payload})}),
+ morningHelpTask:(role:'manager'|'director',team:string)=>call('/api/morning-briefings/help-task',{method:'POST',body:JSON.stringify({role,team})}),
  review:(id:string,action:'approve'|'reject',comment='')=>call(`/api/events/${id}/review`,{method:'POST',body:JSON.stringify({role:'supervisor',actor:'前台客服主管',action,comment})}),
  createReportTask:(payload:{role:string;actor:string;reportDate:string;employee:{category:string;position:string;sourceRow:number;name:string;jobNo:string;team:string;reason:string}})=>call('/api/tasks',{method:'POST',body:JSON.stringify({...payload,source:'team-morning-brief'})}),
  createDirectiveTask:(payload:{role:string;title:string;targetRole:string;owner:string;problem:string;issueCategory:string;issueLocation:string;target:string;successCriteria:string;actionPlan:string;metricCode:string;metricLabel:string;metricUnit:string;metricDirection:'higher'|'lower';baselineValue:number;targetValue:number;plannedStartAt:string;submitDueAt:string;verificationDueAt:string;aiRationale:string;employeeCode?:string;employeeName?:string;team?:string})=>call('/api/tasks',{method:'POST',body:JSON.stringify({...payload,source:'management-directive'})}),
+ createTaskRequest:(payload:{role:string;title:string;targetRole:string;owner:string;problem:string;issueCategory:string;issueLocation:string;target:string;successCriteria:string;actionPlan:string;metricCode:string;metricLabel:string;metricUnit:string;metricDirection:'higher'|'lower';baselineValue:number;targetValue:number;plannedStartAt:string;submitDueAt:string;verificationDueAt:string;aiRationale:string;employeeCode?:string;employeeName?:string;team?:string})=>call('/api/tasks',{method:'POST',body:JSON.stringify({...payload,source:'role-request'})}),
  createQualityCollaboration:(payload:{role:'quality';actor:string;requirement:string;dueAt:string;reinspectAt:string;successCriteria:string;employee:{id:string;name:string;team:string;leader:string;problem:string;evidence:string}})=>call('/api/quality/collaborations',{method:'POST',body:JSON.stringify(payload)}),
  qualityPlanAction:(id:string,action:'update'|'close',payload:Record<string,number>={})=>call(`/api/quality/plans/${id}/action`,{method:'POST',body:JSON.stringify({role:'quality',action,...payload})}),
  createQualityRecord:(payload:{planId:string;callId:string;employeeId:string;employeeName:string;team:string;business:string;score:number;result:'passed'|'failed';severity:'none'|'minor'|'major'|'critical';problem:string;standard:string;evidence:string})=>call('/api/quality/records',{method:'POST',body:JSON.stringify({role:'quality',...payload})}),
@@ -282,17 +345,17 @@ export const workflowApi={
  createLearningSuggestion:(payload:{category:LearningSuggestion['category'];title:string;detail:string})=>call('/api/learning/suggestions',{method:'POST',body:JSON.stringify({role:'employee',employeeId:'JR10776',...payload})}),
  learningSuggestionAction:(id:string,action:'start'|'accept'|'reject'|'close',response:string)=>call(`/api/learning/suggestions/${id}/action`,{method:'POST',body:JSON.stringify({role:'training',action,response})}),
  growthReviewAction:(id:string,role:'training'|'leader',action:'training_submit'|'leader_close',comment:string)=>call(`/api/learning/growth-reviews/${id}/action`,{method:'POST',body:JSON.stringify({role,action,comment})}),
- createDevelopmentCase:(payload:{role:DevelopmentRole;type:'training'|'interview';title:string;reason:string;goal:string;employeeId:string;responderRole:DevelopmentRole;dueAt:string})=>call('/api/development/cases',{method:'POST',body:JSON.stringify(payload)}),
+ createDevelopmentCase:(payload:{role:DevelopmentRole;type:'training'|'interview';title:string;reason:string;goal:string;employeeId:string;responderRole:'employee';plannedAt:string;dueAt:string;verificationDueAt:string;actionPlan:string;successCriteria:string})=>call('/api/development/cases',{method:'POST',body:JSON.stringify(payload)}),
  developmentCaseAction:(id:string,role:DevelopmentRole,action:'accept'|'submit'|'verify_success'|'verify_return',comment:string)=>call(`/api/development/cases/${id}/action`,{method:'POST',body:JSON.stringify({role,action,comment})}),
+ developmentCaseComment:(id:string,role:'supervisor'|'manager'|'director',nodeCode:DevelopmentCommentNode,comment:string)=>call(`/api/development/cases/${id}/comments`,{method:'POST',body:JSON.stringify({role,nodeCode,comment})}),
  governanceShiftPlanAction:(id:string,role:'supervisor'|'manager',action:'submit'|'manager_approve'|'manager_return',comment='')=>call(`/api/governance/shift-plans/${id}/action`,{method:'POST',body:JSON.stringify({role,action,comment})}),
  governanceSkillRouteAction:(id:string,role:'supervisor'|'manager',action:'submit'|'manager_approve'|'manager_return'|'submit_effect',payload:Record<string,string|number>={})=>call(`/api/governance/skill-routes/${id}/action`,{method:'POST',body:JSON.stringify({role,action,...payload})}),
  governanceBudgetAction:(id:string,role:'manager'|'director',action:'manager_submit'|'director_approve'|'director_return',comment='')=>call(`/api/governance/budgets/${id}/action`,{method:'POST',body:JSON.stringify({role,action,comment})}),
- governanceContractAction:(id:string,role:'manager'|'director',action:'manager_submit'|'director_approve'|'director_return',comment='')=>call(`/api/governance/contracts/${id}/action`,{method:'POST',body:JSON.stringify({role,action,comment})}),
  governanceMeetingAction:(id:string,summary:string)=>call(`/api/governance/meetings/${id}/action`,{method:'POST',body:JSON.stringify({role:'director',action:'publish',summary})}),
  createCrossDepartmentItem:(payload:{title:string;targetRole:'manager'|'supervisor'|'hrbp'|'quality'|'training';targetDepartment:string;detail:string;target:string;dueAt:string})=>call('/api/governance/cross-department',{method:'POST',body:JSON.stringify({role:'director',...payload})}),
  governanceCrossDepartmentAction:(id:string,role:'manager'|'supervisor'|'hrbp'|'quality'|'training'|'director',action:'start'|'submit_result'|'director_verify'|'director_return',result='')=>call(`/api/governance/cross-department/${id}/action`,{method:'POST',body:JSON.stringify({role,action,result})}),
  createWorkforceRequest:(payload:{role:string;kind:WorkforceRequestKind;title?:string;employeeId?:string;fromTeam?:string;toTeam?:string;date:string;detail:string;dueAt?:string})=>call('/api/workforce/requests',{method:'POST',body:JSON.stringify(payload)}),
  workforceRequestAction:(id:string,role:string,action:'leader_approve'|'leader_reject'|'supervisor_approve'|'supervisor_reject'|'manager_acknowledge_warning'|'manager_approve'|'manager_reject'|'hrbp_file',comment='')=>call(`/api/workforce/requests/${id}/action`,{method:'POST',body:JSON.stringify({role,action,comment})}),
- taskAction:(id:string,role:string,action:string,payload:Record<string,string>={})=>call(`/api/tasks/${id}/action`,{method:'POST',body:JSON.stringify({role,action,...payload})}),
+  taskAction:(id:string,role:string,action:string,payload:Record<string,string>={})=>call<WorkflowTaskActionPatch>(`/api/tasks/${id}/action`,{method:'POST',body:JSON.stringify({role,action,...payload})}),
  simulateTimeout:(role:string)=>call('/api/simulate-timeout',{method:'POST',body:JSON.stringify({role})})
 }

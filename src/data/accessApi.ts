@@ -1,8 +1,9 @@
-import type { SystemRole, SystemUser } from '../types'
+import type { OrganizationDirectory, SystemRole, SystemUser } from '../types'
 
 export interface AccessState {
  users:SystemUser[]
  roles:SystemRole[]
+ organization:OrganizationDirectory
  audit:{at:string;actor:string;action:string}[]
 }
 

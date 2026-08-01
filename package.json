@@ -8,6 +8,7 @@
     "api": "node server/server.js",
     "start": "node server/server.js",
     "db:migrate": "node --env-file=.env server/migrate.js",
+    "admin:reset-password": "node server/resetAdminPassword.js",
     "build": "tsc -b && vite build",
     "preview": "vite preview --host 0.0.0.0",
     "test": "node --test test/*.test.js",

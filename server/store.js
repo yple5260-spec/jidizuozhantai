@@ -7,6 +7,8 @@ const dataDir=process.env.DATA_DIR||path.join(dir,'data')
 const dataFile=path.join(dataDir,'state.json')
 const backupFile=path.join(dataDir,'state.backup.json')
 const tempFile=path.join(dataDir,'state.tmp.json')
+const financialSeedFile=path.join(dir,'seeds','hebei-10015-financial-performance.json')
+const financialPerformanceSeed=JSON.parse(fs.readFileSync(financialSeedFile,'utf8'))
 const now=()=>new Date().toISOString()
 const businessDateFormatter=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'})
 const dateKey=offset=>businessDateFormatter.format(new Date(Date.now()+offset*24*60*60*1000))
@@ -108,6 +110,38 @@ const initialQuality=()=>({
     {id:'QKB-20260725-002',title:'营销推荐需求确认缺失反例',category:'营销规范',sourceRecordId:'QR-20260725-003',problem:'未确认客户现有套餐和使用偏好即直接推荐',standard:'营销推荐规范 V4.1',example:'反例片段已脱敏，需补充正确示范话术后发布。',status:'draft',createdBy:'钱敏',reviewedBy:'',createdAt:now(),publishedAt:'',history:[{at:now(),actor:'钱敏',action:'从抽检问题生成案例草稿'}]},
   ],
 })
+
+const initialExcellence=()=>({
+  version:1,
+  evaluation:{period:'2026年7月',topPercent:20,rule:'综合目标达成率降序；同分时依次比较质检分、有效任务单数',minimumEvidenceTasks:2},
+  employeeAchievements:[
+    {id:'EA-001',jobNo:'JR10381',name:'赵晨',team:'普通客服一区·8班',metric:'一次解决率',unit:'%',target:90,actual:96.2,qualityScore:96,effectiveTaskCount:5},
+    {id:'EA-002',jobNo:'JR10822',name:'刘欣',team:'普通客服一区·6班',metric:'客户满意率',unit:'%',target:97,actual:99.3,qualityScore:95,effectiveTaskCount:4},
+    {id:'EA-003',jobNo:'JR10776',name:'李倩',team:'普通客服一区·8班',metric:'客户满意率',unit:'%',target:97,actual:99.1,qualityScore:94,effectiveTaskCount:4},
+    {id:'EA-004',jobNo:'JR10691',name:'周浩',team:'普通客服一区·6班',metric:'续约成功率',unit:'%',target:21,actual:21.2,qualityScore:93,effectiveTaskCount:3},
+    {id:'EA-005',jobNo:'JR10517',name:'陈敏',team:'普通客服一区·5班',metric:'一次解决率',unit:'%',target:90,actual:90.1,qualityScore:92,effectiveTaskCount:3},
+    {id:'EA-006',jobNo:'JR10438',name:'郭悦',team:'普通客服一区·4班',metric:'客户满意率',unit:'%',target:97,actual:96.7,qualityScore:91,effectiveTaskCount:2},
+    {id:'EA-007',jobNo:'JR10182',name:'魏琳',team:'普通客服一区·2班',metric:'建单合规率',unit:'%',target:96,actual:94.9,qualityScore:90,effectiveTaskCount:2},
+    {id:'EA-008',jobNo:'JR10913',name:'王芳',team:'普通客服一区·8班',metric:'续约成功率',unit:'%',target:21,actual:20.2,qualityScore:86,effectiveTaskCount:2},
+    {id:'EA-009',jobNo:'JR11005',name:'孙雷',team:'普通客服一区·8班',metric:'一次解决率',unit:'%',target:90,actual:85.8,qualityScore:84,effectiveTaskCount:1},
+    {id:'EA-010',jobNo:'JR10276',name:'林雪',team:'普通客服一区·4班',metric:'客户满意率',unit:'%',target:97,actual:91.6,qualityScore:82,effectiveTaskCount:1},
+  ],
+  experiences:[
+    {id:'EXP-202607-001',title:'续约争议“四步确认”闭环法',category:'续约业务',sourceTaskId:'TK-202607-021',sourceTaskTitle:'8班续约争议重复来电改善',ownerJobNo:'JR10381',ownerName:'赵晨',team:'普通客服一区·8班',metric:'重复来电率',unit:'%',direction:'lower',baseline:6.1,target:4.5,actual:3.8,actionSummary:'先复述客户争议点，再按承诺期、办理结果、查询路径和客户确认四步闭环。',steps:['定位客户真正争议点并复述确认','用客户语言解释承诺期与生效时间','复述办理结果和查询路径','邀请客户复述并纠偏'],evidence:['连续7日样本126通','质检复核20通，规范率100%'],verifiedBy:'质检主管',verifiedAt:'2026-07-27T10:20:00+08:00',aiPublished:true,publishedAt:'2026-07-27T10:35:00+08:00',keywords:['续约','承诺期','重复来电','生效时间'],invocationCount:18},
+    {id:'EXP-202607-002',title:'高峰前30分钟跨班技能预调度',category:'现场运营',sourceTaskId:'TK-202607-018',sourceTaskTitle:'普通客服一区高峰接通率改善',ownerJobNo:'JR10006',ownerName:'刘洋',team:'普通客服一区·6班',metric:'高峰接通率',unit:'%',direction:'higher',baseline:83.4,target:89,actual:91.3,actionSummary:'基于未来30分钟话务预测，提前核对调出侧保护线并按技能标签完成跨班调度。',steps:['读取30分钟话务预测与技能缺口','校验调出班组覆盖率不低于95%','提前10分钟完成技能切换','结束后回填接通率与排队量'],evidence:['连续5个高峰窗口达标','调出侧覆盖率保持96%以上'],verifiedBy:'客服经理',verifiedAt:'2026-07-26T18:00:00+08:00',aiPublished:true,publishedAt:'2026-07-26T18:15:00+08:00',keywords:['接通率','高峰','调度','排队','覆盖率'],invocationCount:11},
+    {id:'EXP-202607-003',title:'新人建单错项当日清零法',category:'建单规范',sourceTaskId:'TK-202607-025',sourceTaskTitle:'新工建单合规率提升',ownerJobNo:'JR10776',ownerName:'李倩',team:'普通客服一区·8班',metric:'建单合规率',unit:'%',direction:'higher',baseline:91.8,target:96,actual:97.2,actionSummary:'将当日错项按字段聚类，班后用正反例对照复盘并在次日首单进行班长验证。',steps:['每日汇总错项字段TOP3','为每个错项绑定一个正反例','班后15分钟完成同伴复盘','次日首单由班长抽验'],evidence:['新工样本80单','连续3日合规率高于96%'],verifiedBy:'培训主管',verifiedAt:'2026-07-28T17:20:00+08:00',aiPublished:false,publishedAt:'',keywords:['建单','新工','合规','错项','复盘'],invocationCount:0},
+  ],
+  recordings:[
+    {id:'REC-202607-001',title:'续约承诺期解释与确认示范',callId:'CALL-10015-0726-1420',employeeJobNo:'JR10381',employeeName:'赵晨',team:'普通客服一区·8班',business:'续约业务',durationSeconds:382,qualityScore:98,targetScore:95,submittedBy:'质检专员 钱敏',submittedAt:'2026-07-27T09:30:00+08:00',aiSummary:'坐席在客户情绪较高时先确认争议点，再用三句话讲清承诺期、生效节点和查询路径，结束前完成客户复述确认。',highlights:['00:42 先共情再复述争议点','02:18 用时间线解释承诺期','05:31 让客户复述关键结果'],phraseIds:['PHR-001','PHR-002'],aiPublished:true},
+    {id:'REC-202607-002',title:'投诉首次联系情绪降级示范',callId:'CALL-10015-0726-1605',employeeJobNo:'JR10822',employeeName:'刘欣',team:'普通客服一区·6班',business:'投诉协同',durationSeconds:468,qualityScore:97,targetScore:95,submittedBy:'质检专员 钱敏',submittedAt:'2026-07-27T11:10:00+08:00',aiSummary:'坐席避免急于解释，通过确认诉求、说明处理边界和承诺下一节点，将客户情绪从高压引导到可协商状态。',highlights:['01:05 不打断客户陈述','03:12 明确能做与不能做的边界','06:40 给出下一次反馈时间'],phraseIds:['PHR-003'],aiPublished:true},
+  ],
+  phrases:[
+    {id:'PHR-001',text:'我先确认一下，您最关心的是办理后什么时候生效，对吗？',scenario:'需求确认',sourceRecordingId:'REC-202607-001',employeeName:'赵晨',qualityScore:98,tags:['续约','确认诉求'],useCount:23},
+    {id:'PHR-002',text:'我们一起把结果再对一遍：今天已办理，生效时间是明天，您可以在联通APP的已订业务里查询。',scenario:'结果复述',sourceRecordingId:'REC-202607-001',employeeName:'赵晨',qualityScore:98,tags:['续约','办理结果'],useCount:19},
+    {id:'PHR-003',text:'您的诉求我已经完整记录，下一步我会先核实处理记录，并在今天17点前给您第一次反馈。',scenario:'投诉安抚',sourceRecordingId:'REC-202607-002',employeeName:'刘欣',qualityScore:97,tags:['投诉','节点承诺'],useCount:16},
+  ],
+})
+const initialFinancialPerformance=()=>structuredClone(financialPerformanceSeed)
 
 const initialPeople=()=>({
   version:1,
@@ -330,34 +364,30 @@ const initialGovernance=()=>({
   ],
   budgets:[
     {
-      id:'BG-202607-10015',month:'2026-07',project:'10015升投',revenueTarget:527,costBudget:416,forecastRevenue:505.9,forecastCost:408.8,
-      targetMargin:21,forecastMargin:19.2,status:'director_pending',ownerRole:'director',owner:'运营总监',dueAt:new Date(Date.now()+6*60*60*1000).toISOString(),
-      managerComment:'结费差异21.1万元主要来自人员费用核减与考核扣款复核；请求总监确认回款与成本控制动作。',
+      id:'BG-2026H1-10015',dataVersion:'2026-08-01-full-year',month:'2026-01—06',project:'河北10015',revenueTarget:1356.95,costBudget:923.86,forecastRevenue:1299.51,forecastCost:852.91,
+      targetMargin:27.8,forecastMargin:30.4,status:'director_pending',ownerRole:'director',owner:'运营总监',dueAt:new Date(Date.now()+6*60*60*1000).toISOString(),
+      managerComment:'预算已按《河北基地-10015-项目预算.xls》的10015单项目口径更正：H1收入预算1356.95万元、实际1299.51万元，Gap 57.44万元；实际毛利率30.4%高于预算27.8%。全年收入预算2823.26万元，H2需完成1523.75万元、月均253.96万元。',
       directorComment:'',history:[{at:now(),actor:'客服经理',action:'提交7月滚动经营预测与预算偏差说明'}],
     },
   ],
   contracts:[
     {
-      id:'CT-10015-2026',customer:'中国联通河北分公司',project:'10015升投',amount:1860,startDate:'2026-01-01',endDate:'2026-12-31',
-      renewalDue:new Date(Date.now()+20*24*60*60*1000).toISOString(),status:'director_pending',ownerRole:'director',owner:'运营总监',risk:'medium',
-      managerComment:'续约材料已完成主体准备；需总监确认考核扣款口径、人员单价调整和下一年度服务量预测。',
-      directorComment:'',
-      milestones:[
-        {name:'经营测算',status:'done',dueAt:'2026-07-22'},
-        {name:'服务复盘',status:'done',dueAt:'2026-07-24'},
-        {name:'条款决策',status:'active',dueAt:'2026-07-28'},
-        {name:'客户沟通',status:'pending',dueAt:'2026-07-30'},
-      ],
-      history:[{at:now(),actor:'客服经理',action:'提交合同续约决策材料，等待总监审批'}],
+      id:'CT-10015-20250901',customer:'中国联通河北分公司',project:'10015',amount:7500,billingMode:'固定合同额',startDate:'2025-09-01',endDate:'2027-08-31',renewalDue:'2027-08-31T23:59:59+08:00',status:'active',ownerRole:'manager',owner:'合同管理员',risk:'low',managerComment:'合同有效期两年，总监仅查阅合同状态与到期提醒，不承担续约审批。',directorComment:'',milestones:[],history:[{at:now(),actor:'系统',action:'按最新合同台账更新：合同额7500万元，2027年8月31日到期'}],
+    },
+    {
+      id:'CT-10010-20250901',customer:'中国联通河北分公司',project:'10010',amount:6000,billingMode:'固定合同额',startDate:'2025-09-01',endDate:'2027-08-31',renewalDue:'2027-08-31T23:59:59+08:00',status:'active',ownerRole:'manager',owner:'合同管理员',risk:'low',managerComment:'合同有效期两年，总监仅查阅合同状态与到期提醒，不承担续约审批。',directorComment:'',milestones:[],history:[{at:now(),actor:'系统',action:'按最新合同台账更新：合同额6000万元，2027年8月31日到期'}],
+    },
+    {
+      id:'CT-HBMARKETING-20250901',customer:'中国联通河北分公司',project:'河北营销',amount:null,billingMode:'按佣金结费',startDate:'2025-09-01',endDate:'2027-08-31',renewalDue:'2027-08-31T23:59:59+08:00',status:'active',ownerRole:'manager',owner:'合同管理员',risk:'low',managerComment:'暂无固定合同额，按实际营销业绩及约定佣金规则结费；总监仅查阅与接收到期提醒。',directorComment:'',milestones:[],history:[{at:now(),actor:'系统',action:'按最新合同台账更新：暂无固定合同额，按佣金结费，2027年8月31日到期'}],
     },
   ],
   meetings:[
     {
       id:'OM-20260725-001',date:dateKey(0),title:'河北基地日经营复盘会',status:'draft',ownerRole:'director',owner:'运营总监',
       summary:'围绕经营预测、现场产能、人员稳定和质量风险形成跨岗位决策。',
-      conclusions:['10015回款完成率低于90%目标，需要锁定甲方确认节点','普通客服一区高峰覆盖不足，需完成调度验效'],
+      conclusions:['河北10015单项目口径下H1收入完成率95.8%、Gap 57.44万元；全年收入预算2823.26万元，H2月均目标253.96万元','普通客服一区高峰覆盖不足，需完成调度验效'],
       actions:[
-        {id:'OMA-001',title:'提交10015结费差异清单与甲方确认计划',ownerRole:'manager',owner:'客服经理',dueAt:new Date(Date.now()+8*60*60*1000).toISOString(),target:'21.1万元差异逐项明确责任人与确认时间',status:'draft'},
+        {id:'OMA-001',title:'提交河北10015收入追回计划',ownerRole:'manager',owner:'客服经理',dueAt:new Date(Date.now()+8*60*60*1000).toISOString(),target:'分解H1收入Gap 57.44万元，按H2累计1523.75万元、月均253.96万元滚动追踪',status:'draft'},
         {id:'OMA-002',title:'完成高峰技能调度并回填接通率',ownerRole:'supervisor',owner:'前台客服主管',dueAt:new Date(Date.now()+3*60*60*1000).toISOString(),target:'10015前台接通率恢复至89%以上',status:'draft'},
       ],
       publishedAt:'',history:[{at:now(),actor:'系统',action:'根据经营、现场、人力与质量数据生成例会草稿'}],
@@ -365,14 +395,38 @@ const initialGovernance=()=>({
   ],
   crossDepartmentItems:[
     {
-      id:'CD-20260725-001',title:'10015结费差异与人员费用联合核对',originRole:'director',targetRole:'manager',targetDepartment:'客户驱动部',
-      detail:'联合HRBP、结算岗核对人员费用核减9.6万元与考核扣款8.0万元，形成逐项确认清单。',
-      target:'21.1万元差异100%明确口径、责任人和甲方确认时间',dueAt:new Date(Date.now()+8*60*60*1000).toISOString(),
+      id:'CD-20260725-001',title:'河北10015全年预算与追回计划',originRole:'director',targetRole:'manager',targetDepartment:'客户驱动部',
+      detail:'联合财务与结算岗按河北10015单项目全年预算，将H1收入差额和H2月均目标分解为可验收动作。',
+      target:'确认H1收入Gap 57.44万元的追回责任，并按H2月均253.96万元滚动复盘',dueAt:new Date(Date.now()+8*60*60*1000).toISOString(),
       status:'target_doing',ownerRole:'manager',owner:'客服经理',result:'',
       history:[{at:now(),actor:'运营总监',action:'下发跨部门经营协同事项，客服经理开始组织核对'}],
     },
   ],
 })
+
+const initialMorningBriefings=()=>{
+ const teams=[
+  {team:'普通客服一区·2班',leader:'魏琳',supervisor:'前台客服主管',planned:7,held:7,averageScore:93,latestScore:95,quality:'优秀',needsHelp:false,diagnosis:'召开稳定，目标宣讲和员工互动完整，可沉淀为区域示范。'},
+  {team:'普通客服一区·4班',leader:'赵敏',supervisor:'前台客服主管',planned:7,held:5,averageScore:74,latestScore:71,quality:'需帮扶',needsHelp:true,diagnosis:'近7日缺开2次，录音中目标量化不足，建议主管跟会并下发改善任务。'},
+  {team:'普通客服一区·5班',leader:'陈敏',supervisor:'前台客服主管',planned:7,held:7,averageScore:86,latestScore:88,quality:'达标',needsHelp:false,diagnosis:'召开完整，业务口径清晰；可增加员工复述确认环节。'},
+  {team:'普通客服一区·6班',leader:'刘洋',supervisor:'前台客服主管',planned:7,held:7,averageScore:96,latestScore:97,quality:'优秀',needsHelp:false,diagnosis:'数据复盘、业务传达和会后动作均形成闭环，具备复制价值。'},
+  {team:'普通客服一区·8班',leader:'张伟',supervisor:'前台客服主管',planned:7,held:6,averageScore:82,latestScore:84,quality:'达标',needsHelp:false,diagnosis:'召开率需提升；重点人员辅导安排清晰，录音完整度良好。'},
+ ]
+ const scheduleTeams=['普通客服一区·8班','普通客服一区·6班','普通客服一区·4班','普通客服一区·5班','普通客服一区·2班','普通客服一区·8班','普通客服一区·6班']
+ const leaders={'普通客服一区·2班':'魏琳','普通客服一区·4班':'赵敏','普通客服一区·5班':'陈敏','普通客服一区·6班':'刘洋','普通客服一区·8班':'张伟'}
+ const schedules=scheduleTeams.map((team,index)=>({
+  id:`MB-${dateKey(index).replaceAll('-','')}-${team.match(/(\d+)班/)?.[1]||index}`,date:dateKey(index),time:'08:20',team,leader:leaders[team],
+  title:index===0?'补齐昨日Gap，统一续约服务口径':index===1?'高峰产能与接通率保障':index===2?'一次解决率专项提升':'日目标复盘与业务重点传达',
+  focus:index===0?['昨日六项指标Gap及今日硬目标','续约“四步确认”服务口径','重点员工会后辅导安排']:index===1?['高峰前技能与人力确认','小时级应答目标','异常升级路径']:['昨日指标复盘','当日目标与过程动作','质检及培训重点'],
+  source:'AI项目运行诊断 + 主管业务重点',status:index===0?'issued':index<4?'issued':'draft',issuedBy:index<4?'前台客服主管':'',issuedAt:index<4?now():'',
+  recording:index===0?{fileName:'8班班前会_0820.m4a',durationSeconds:914,recordedAt:now(),aiSummary:'五个环节完整，目标与业务口径清晰；员工复述环节可进一步加强。'}:null,
+  qualityScore:index===0?84:0,qualitySummary:index===0?'结构完整、目标量化清晰；员工互动与复述确认不足。':'',
+ }))
+ return {version:1,teams,schedules,suggestions:[
+  {id:'MBS-001',sourceRole:'quality',sourceName:'质检专员',title:'续约争议四步确认口径',content:'建议未来一周班前会统一宣讲“确认套餐—解释规则—指引办理—复述确认”，并在会后抽测。',targetTeam:'全部班组',proposedDate:dateKey(1),status:'pending',supervisorComment:'',createdAt:now()},
+  {id:'MBS-002',sourceRole:'training',sourceName:'培训主管',title:'新人首单建单校验',content:'建议安排新人在班前会完成一组正反例辨析，班长于首单进行字段校验。',targetTeam:'普通客服一区·8班',proposedDate:dateKey(2),status:'adopted',supervisorComment:'纳入周三班前会重点',createdAt:now()},
+ ],todayBulletin:{date:dateKey(0),title:'补齐昨日Gap，稳定客户感知',points:['人工应答量与置忙小休按小时校准','续约争议执行“四步确认”','异常口径先查询、再答复、及时升级'],targets:['人工应答量≥1,360通','满意率≥97.2%','一次解决率≥90%','重复来电率≤4%'],businessUpdate:'续约产品办理路径已更新，统一确认套餐、解释规则、指引办理、复述确认。'}}
+}
 
 const initialState=()=>({
   meta:{lastRefresh:now(),nextRefresh:new Date(Date.now()+30*60*1000).toISOString(),refreshIntervalMinutes:30,batchNo:41,sourceMode:'simulated'},
@@ -391,9 +445,12 @@ const initialState=()=>({
   workforce:initialWorkforce(),
   training:initialTraining(),
   quality:initialQuality(),
+  excellence:initialExcellence(),
+  financialPerformance:initialFinancialPerformance(),
   people:initialPeople(),
   learning:initialLearning(),
   governance:initialGovernance(),
+  morningBriefings:initialMorningBriefings(),
 })
 
 const migrateHrbpManagerName=state=>JSON.parse(JSON.stringify(state).replaceAll('陈静','王丽伟'))
@@ -414,11 +471,22 @@ const normalizeWorkforce=source=>{
   }}
  })}
 }
-const normalize=rawState=>{
+export const normalizeState=rawState=>{
  const state=migrateHrbpManagerName(rawState)
  const learningBase=state.learning&&Array.isArray(state.learning.questionBanks)&&Array.isArray(state.learning.sessions)&&Array.isArray(state.learning.assignments)&&Array.isArray(state.learning.suggestions)&&Array.isArray(state.learning.growthReviews)?state.learning:initialLearning()
  const learning={...learningBase,version:2,developmentCases:Array.isArray(learningBase.developmentCases)?learningBase.developmentCases:initialLearning().developmentCases}
- return {...state,reportRuns:Array.isArray(state.reportRuns)?state.reportRuns:[],reportDownloads:Array.isArray(state.reportDownloads)?state.reportDownloads:[],trainingReports:Array.isArray(state.trainingReports)?state.trainingReports:[],hrbpCases:Array.isArray(state.hrbpCases)?state.hrbpCases:initialState().hrbpCases,workforce:normalizeWorkforce(state.workforce),training:state.training&&Array.isArray(state.training.cohorts)&&Array.isArray(state.training.trainees)&&Array.isArray(state.training.programs)?{...state.training,cohorts:state.training.cohorts.map(cohort=>({...cohort,forecastPassRate:Number(cohort.forecastPassRate)||88.5}))}:initialTraining(),quality:state.quality?.version===2&&Array.isArray(state.quality.plans)&&Array.isArray(state.quality.records)&&Array.isArray(state.quality.appeals)&&Array.isArray(state.quality.calibrations)&&Array.isArray(state.quality.cases)?state.quality:initialQuality(),people:state.people?.version===1&&Array.isArray(state.people.staffingPlans)&&Array.isArray(state.people.lifecycle)&&Array.isArray(state.people.laborCases)&&Array.isArray(state.people.interviews)?state.people:initialPeople(),learning,governance:state.governance?.version===1&&Array.isArray(state.governance.shiftPlans)&&Array.isArray(state.governance.skillRoutes)&&Array.isArray(state.governance.budgets)&&Array.isArray(state.governance.contracts)&&Array.isArray(state.governance.meetings)&&Array.isArray(state.governance.crossDepartmentItems)?state.governance:initialGovernance()}
+ const excellenceBase=state.excellence?.version===1&&Array.isArray(state.excellence.employeeAchievements)&&Array.isArray(state.excellence.experiences)&&Array.isArray(state.excellence.recordings)&&Array.isArray(state.excellence.phrases)?state.excellence:initialExcellence()
+ const excellence={...excellenceBase,employeeAchievements:excellenceBase.employeeAchievements.map(item=>item.id==='EA-002'&&item.actual>100?{...item,actual:99.3}:item)}
+ const financialPerformance=state.financialPerformance?.version===1&&Array.isArray(state.financialPerformance.metrics)&&state.financialPerformance.sources?.budget?.fileName===financialPerformanceSeed.sources.budget.fileName?state.financialPerformance:initialFinancialPerformance()
+ const morningBriefings=state.morningBriefings?.version===1&&Array.isArray(state.morningBriefings.teams)&&Array.isArray(state.morningBriefings.schedules)&&Array.isArray(state.morningBriefings.suggestions)?state.morningBriefings:initialMorningBriefings()
+ const governanceBase=state.governance?.version===1&&Array.isArray(state.governance.shiftPlans)&&Array.isArray(state.governance.skillRoutes)&&Array.isArray(state.governance.budgets)&&Array.isArray(state.governance.contracts)&&Array.isArray(state.governance.meetings)&&Array.isArray(state.governance.crossDepartmentItems)?state.governance:initialGovernance()
+ const budgetSeed=initialGovernance().budgets[0]
+ const budgetCurrent=governanceBase.budgets.find(item=>['BG-202607-10015','BG-2026H1-NORTH1','BG-2026H1-10015'].includes(item.id))
+ const budgetDataChanged=budgetCurrent?.dataVersion!==budgetSeed.dataVersion
+ const budgetUpdated=budgetCurrent?{...budgetCurrent,id:budgetSeed.id,dataVersion:budgetSeed.dataVersion,month:budgetSeed.month,project:budgetSeed.project,revenueTarget:budgetSeed.revenueTarget,costBudget:budgetSeed.costBudget,forecastRevenue:budgetSeed.forecastRevenue,forecastCost:budgetSeed.forecastCost,targetMargin:budgetSeed.targetMargin,forecastMargin:budgetSeed.forecastMargin,managerComment:budgetDataChanged?budgetSeed.managerComment:budgetCurrent.managerComment}:budgetSeed
+ const contractSeed=initialGovernance().contracts,contractsCurrent=governanceBase.contracts.length===3&&governanceBase.contracts.every(item=>contractSeed.some(seed=>seed.id===item.id))
+ const governance={...governanceBase,budgets:[budgetUpdated,...governanceBase.budgets.filter(item=>!['BG-202607-10015','BG-2026H1-NORTH1','BG-2026H1-10015'].includes(item.id))],contracts:contractsCurrent?governanceBase.contracts:contractSeed}
+ return {...state,reportRuns:Array.isArray(state.reportRuns)?state.reportRuns:[],reportDownloads:Array.isArray(state.reportDownloads)?state.reportDownloads:[],trainingReports:Array.isArray(state.trainingReports)?state.trainingReports:[],hrbpCases:Array.isArray(state.hrbpCases)?state.hrbpCases:initialState().hrbpCases,workforce:normalizeWorkforce(state.workforce),training:state.training&&Array.isArray(state.training.cohorts)&&Array.isArray(state.training.trainees)&&Array.isArray(state.training.programs)?{...state.training,cohorts:state.training.cohorts.map(cohort=>({...cohort,forecastPassRate:Number(cohort.forecastPassRate)||88.5}))}:initialTraining(),quality:state.quality?.version===2&&Array.isArray(state.quality.plans)&&Array.isArray(state.quality.records)&&Array.isArray(state.quality.appeals)&&Array.isArray(state.quality.calibrations)&&Array.isArray(state.quality.cases)?state.quality:initialQuality(),excellence,financialPerformance,morningBriefings,people:state.people?.version===1&&Array.isArray(state.people.staffingPlans)&&Array.isArray(state.people.lifecycle)&&Array.isArray(state.people.laborCases)&&Array.isArray(state.people.interviews)?state.people:initialPeople(),learning,governance}
 }
 
 export function load(){
@@ -428,14 +496,16 @@ export function load(){
   if(!raw) throw new Error('状态文件为空')
   const parsed=JSON.parse(raw)
   if(!parsed.meta||!Array.isArray(parsed.events)||!Array.isArray(parsed.tasks)) throw new Error('状态文件结构不完整')
-  const normalized=normalize(parsed)
-  if(raw.includes('陈静')||!parsed.training||parsed.training.cohorts?.some(cohort=>!Number(cohort.forecastPassRate))||parsed.quality?.version!==2||parsed.people?.version!==1||parsed.learning?.version!==2||!Array.isArray(parsed.learning?.developmentCases)||parsed.governance?.version!==1)save(normalized)
+  const normalized=normalizeState(parsed)
+  const contractIds=['CT-10015-20250901','CT-10010-20250901','CT-HBMARKETING-20250901']
+  const contractsCurrent=parsed.governance?.contracts?.length===3&&parsed.governance.contracts.every(item=>contractIds.includes(item.id))
+  if(raw.includes('陈静')||!parsed.training||parsed.training.cohorts?.some(cohort=>!Number(cohort.forecastPassRate))||parsed.quality?.version!==2||parsed.excellence?.version!==1||parsed.excellence?.employeeAchievements?.some(item=>item.id==='EA-002'&&item.actual>100)||parsed.financialPerformance?.version!==1||parsed.financialPerformance?.sources?.budget?.fileName!==financialPerformanceSeed.sources.budget.fileName||parsed.morningBriefings?.version!==1||parsed.people?.version!==1||parsed.learning?.version!==2||!Array.isArray(parsed.learning?.developmentCases)||parsed.governance?.version!==1||!contractsCurrent)save(normalized)
   return normalized
  }catch(error){
   console.warn(`状态文件损坏，自动恢复：${error.message}`)
   try{
    if(fs.existsSync(backupFile)){
-    const backup=normalize(JSON.parse(fs.readFileSync(backupFile,'utf8')))
+    const backup=normalizeState(JSON.parse(fs.readFileSync(backupFile,'utf8')))
     save(backup)
     return backup
    }
@@ -454,7 +524,7 @@ export function save(state){
  return state
 }
 export function reset(){
- const s=initialState()
+ const s=normalizeState(initialState())
  fs.mkdirSync(dataDir,{recursive:true})
  fs.rmSync(path.join(dataDir,'generated'),{recursive:true,force:true})
  const content=JSON.stringify(s,null,2)

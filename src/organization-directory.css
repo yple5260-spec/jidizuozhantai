@@ -1,0 +1,28 @@
+.organization-directory{margin-bottom:18px;overflow:hidden}
+.organization-directory-head{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;padding:22px 24px;border-bottom:1px solid #e7edf3}
+.organization-directory-head>div:first-child>span{font-size:12px;font-weight:700;color:#2472c8;letter-spacing:.04em}
+.organization-directory-head h2{margin:5px 0 6px;font-size:21px;color:#172535}
+.organization-directory-head p{margin:0;font-size:12px;color:#788695}
+.organization-source{display:flex;align-items:center;gap:9px;padding:10px 13px;border-radius:10px;background:#edf8f3;color:#187452;white-space:nowrap}
+.organization-source span{display:flex;flex-direction:column;font-size:11px}.organization-source strong{font-size:16px}
+.organization-projects{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px;padding:16px 24px 10px}
+.organization-projects button{display:flex;align-items:center;gap:9px;padding:12px;border:1px solid #e0e8ef;border-radius:10px;background:#fff;color:#536274;text-align:left}
+.organization-projects button span{display:flex;flex:1;align-items:center;justify-content:space-between;gap:6px;font-size:12px}.organization-projects button strong{font-size:17px;color:#172535}
+.organization-projects button.active{border-color:#2b78c5;background:#eef6ff;color:#1767b7}
+.organization-role-stats{display:flex;flex-wrap:wrap;gap:8px;padding:4px 24px 15px}
+.organization-role-stats button{display:flex;align-items:center;gap:6px;padding:7px 10px;border:1px solid #e1e8ee;border-radius:999px;background:#f8fafc;color:#5c6875;font-size:12px}
+.organization-role-stats button strong{color:#172535}.organization-role-stats button.active{border-color:#2b78c5;background:#eaf4ff;color:#1767b7}
+.organization-toolbar{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:14px 24px;background:#f7f9fb;border-top:1px solid #edf1f4;border-bottom:1px solid #e5ebf0}
+.organization-toolbar label{display:flex;align-items:center;gap:8px;min-width:340px;padding:9px 11px;border:1px solid #dce4eb;border-radius:8px;background:#fff;color:#7a8793}
+.organization-toolbar input{width:100%;border:0;outline:0;background:transparent;font:inherit}
+.organization-toolbar>div{display:flex;align-items:center;gap:7px}.organization-toolbar>div span{padding:5px 8px;border-radius:6px;background:#fff;border:1px solid #e1e7ed;font-size:11px;color:#607080}.organization-toolbar>div strong{font-size:13px;color:#172535}
+.organization-list-head,.organization-list article{display:grid;grid-template-columns:1.05fr 1.7fr 1.2fr .9fr;gap:16px;align-items:center;padding:11px 24px}
+.organization-list-head{background:#f3f6f8;color:#778390;font-size:11px;font-weight:700}
+.organization-list article{min-height:58px;border-top:1px solid #edf1f4}
+.organization-list article>div{min-width:0;display:flex;flex-direction:column;gap:3px}.organization-list article strong{font-size:13px;color:#243343}.organization-list article small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:#7b8793}
+.organization-person{flex-direction:row!important;align-items:center}.organization-person i{display:grid;place-items:center;width:31px;height:31px;border-radius:9px;background:#e9f2fb;color:#236db5;font-style:normal;font-weight:700}.organization-person span{display:flex;flex-direction:column;gap:2px}
+.directory-role{align-self:flex-start;padding:4px 8px;border-radius:6px;background:#edf3f8;color:#49657e;font-size:11px;font-weight:700}
+.directory-role.operation-director,.directory-role.customer-manager{background:#fff0dc;color:#9c641c}.directory-role.quality-specialist{background:#eee9ff;color:#6952a8}.directory-role.training-manager{background:#e7f7f1;color:#27745b}.directory-role.hrbp-manager{background:#fdebf2;color:#a34267}
+.organization-limit{display:flex;align-items:center;justify-content:center;gap:7px;padding:12px;background:#fbfcfd;border-top:1px solid #e7edf2;color:#6e7d8b;font-size:12px}
+@media(max-width:1100px){.organization-projects{grid-template-columns:repeat(3,minmax(0,1fr))}.organization-list-head,.organization-list article{grid-template-columns:1fr 1.4fr 1fr}.organization-list-head span:last-child,.organization-list article>div:last-child{display:none}}
+@media(max-width:760px){.organization-directory-head,.organization-toolbar{align-items:stretch;flex-direction:column}.organization-projects{grid-template-columns:repeat(2,minmax(0,1fr))}.organization-toolbar label{min-width:0}.organization-list-head,.organization-list article{grid-template-columns:1fr 1.25fr}.organization-list-head span:nth-child(3),.organization-list article>div:nth-child(3){display:none}}

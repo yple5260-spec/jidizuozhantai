@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { databaseConfigured, databaseQuery } from './database.js'
+import { databaseConfigured, databaseQuery, databaseTransaction } from './database.js'
 
 const threadId=(userId,role)=>createHash('sha256').update(`${userId}:${role}`).digest('hex')
 
@@ -14,6 +14,19 @@ export const markNotificationRead=async(userId,notificationIds)=>{
  for(const id of Array.from(new Set(notificationIds.filter(Boolean)))){
   await databaseQuery('INSERT IGNORE INTO platform_notification_receipt(notification_id,user_id) VALUES (?,?)',[String(id).slice(0,128),userId])
  }
+}
+
+export const applyRuntimeRetention=async()=>{
+ if(!databaseConfigured())return
+ await databaseTransaction(async connection=>{
+  await connection.query("DELETE FROM platform_notification WHERE target_role='data'")
+  await connection.query("DELETE FROM platform_notification WHERE created_at<DATE_SUB(CURRENT_TIMESTAMP(3),INTERVAL 90 DAY)")
+  await connection.query("DELETE FROM platform_notification_receipt WHERE notification_id NOT IN (SELECT id FROM platform_notification)")
+  await connection.query("DELETE FROM platform_audit_log WHERE actor_name='定时调度器' OR occurred_at<DATE_SUB(CURRENT_TIMESTAMP(3),INTERVAL 365 DAY)")
+  await connection.query("DELETE FROM platform_business_audit WHERE created_at<DATE_SUB(CURRENT_TIMESTAMP(3),INTERVAL 365 DAY)")
+  await connection.query("DELETE FROM platform_scheduler_execution WHERE completed_at IS NOT NULL AND completed_at<DATE_SUB(CURRENT_TIMESTAMP(3),INTERVAL 30 DAY)")
+  await connection.query("DELETE FROM platform_business_outbox WHERE status='completed' AND processed_at<DATE_SUB(CURRENT_TIMESTAMP(3),INTERVAL 7 DAY)")
+ })
 }
 
 export const aiHistory=async(userId,role,limit=40)=>{

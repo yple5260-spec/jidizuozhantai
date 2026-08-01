@@ -94,6 +94,14 @@ export const normalizeLeanTask=source=>{
  task.verificationDueAt=iso(task.verificationDueAt||task.reinspectAt,new Date(Date.parse(dueAt)+24*60*60*1000).toISOString())
  task.attachments=Array.isArray(task.attachments)?task.attachments:[]
  task.metricSnapshots=Array.isArray(task.metricSnapshots)?task.metricSnapshots:[]
+ task.managementRecords=Array.isArray(task.managementRecords)?task.managementRecords:[]
+ task.archivedAt=task.archivedAt||''
+ task.archivedBy=task.archivedBy||''
+ task.archiveNote=task.archiveNote||''
+ task.nextFollowUpAt=task.nextFollowUpAt||''
+ task.lastFollowUpAt=task.lastFollowUpAt||''
+ task.interventionCount=Number(task.interventionCount||0)
+ task.reopenCount=Number(task.reopenCount||0)
  if(!task.metricSnapshots.length&&task.metric.baseline!=null)task.metricSnapshots.push({
   id:`${task.id}:baseline`,metricCode:task.metric.code,metricLabel:task.metric.label,actual:task.metric.baseline,
   target:task.metric.target,unit:task.metric.unit,direction:task.metric.direction,type:'baseline',source:'任务创建基线',observedAt:createdAt,note:'创建任务时记录的指标基线',
@@ -116,23 +124,24 @@ export const completeTaskNode=(task,code,{actor,role,result=''})=>{
 }
 
 export const improvementSummary=(task,livePoints=[])=>{
+ const metric=task.metric||inferMetric(`${task.issueCategory||task.type||''} ${task.problem||task.requirement||task.title||''}`)
  const stored=(task.metricSnapshots||[]).map(item=>({date:item.observedAt,value:finite(item.actual),source:item.source||'任务记录',type:item.type||'observation'}))
  const merged=[...stored,...livePoints].filter(item=>item.value!=null).sort((a,b)=>Date.parse(a.date)-Date.parse(b.date))
  const unique=merged.filter((item,index,array)=>index===array.findIndex(candidate=>candidate.date===item.date&&candidate.value===item.value))
- const baseline=finite(task.metric?.baseline)??unique[0]?.value??null
+ const baseline=finite(metric.baseline)??unique[0]?.value??null
  const latest=unique.at(-1)?.value??baseline
- const target=finite(task.metric?.target)
- const direction=task.metric?.direction||'higher'
+ const target=finite(metric.target)
+ const direction=metric.direction||'higher'
  const delta=baseline==null||latest==null?null:Number((latest-baseline).toFixed(2))
  const targetMet=latest!=null&&target!=null?(direction==='lower'?latest<=target:latest>=target):false
  const improved=delta==null?false:(direction==='lower'?delta<0:delta>0)
  return {
-  metric:task.metric,baseline,latest,target,delta,targetMet,improved,
+  metric,baseline,latest,target,delta,targetMet,improved,
   points:unique.slice(-7),
   conclusion:latest==null?'暂无可用于验证的指标数据，请结合附件和现场记录判断。':targetMet
-   ?`${task.metric.label}已达到目标，较基线${delta>=0?'提升':'下降'}${Math.abs(delta)}${task.metric.unit}。`
+   ?`${metric.label}已达到目标，较基线${delta>=0?'提升':'下降'}${Math.abs(delta)}${metric.unit}。`
    :improved
-    ?`${task.metric.label}较基线已有改善，但尚未达到${target}${task.metric.unit}目标。`
-    :`${task.metric.label}尚未出现有效改善，建议退回补充动作或升级支持。`,
+    ?`${metric.label}较基线已有改善，但尚未达到${target}${metric.unit}目标。`
+    :`${metric.label}尚未出现有效改善，建议退回补充动作或升级支持。`,
  }
 }

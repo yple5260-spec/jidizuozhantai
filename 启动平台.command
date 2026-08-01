@@ -117,9 +117,12 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# MySQL 首次连接和迁移可能需要数秒，最多等待 15 秒，不再用固定 1 秒误判失败。
+# MySQL 首次连接、迁移锁和RDS网络握手偶尔需要更长时间。
+# 使用真实截止时间等待，避免数据库正常初始化时被15秒固定窗口误判失败。
+API_START_TIMEOUT="${API_START_TIMEOUT:-60}"
+API_START_DEADLINE=$((SECONDS + API_START_TIMEOUT))
 STARTED_API_VERSION=$(read_api_version)
-for _ in {1..30}; do
+while [ "$SECONDS" -lt "$API_START_DEADLINE" ]; do
   if [ "$STARTED_API_VERSION" = "$EXPECTED_API_VERSION" ]; then
     break
   fi
@@ -133,6 +136,12 @@ done
 if [ "$STARTED_API_VERSION" != "$EXPECTED_API_VERSION" ]; then
   echo "业务API启动失败，日志如下："
   cat "$API_LOG" 2>/dev/null || true
+  if [ -n "$STARTED_API_VERSION" ]; then
+    echo "健康检查返回版本：$STARTED_API_VERSION"
+    echo "期望版本：$EXPECTED_API_VERSION"
+  elif [ -n "$API_PID" ] && kill -0 "$API_PID" 2>/dev/null; then
+    echo "API进程仍在运行，但${API_START_TIMEOUT}秒内未通过健康检查。"
+  fi
   echo "请检查上方具体错误；也可确认4174端口和数据库网络后重新双击启动脚本。"
   pause_and_exit 1
 fi

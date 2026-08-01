@@ -1,15 +1,19 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto'
+import { fileURLToPath } from 'node:url'
 import { dataDir } from './store.js'
 import { databaseConfigured, databaseQuery, databaseTransaction } from './database.js'
 
 const accessFile=path.join(dataDir,'access-control.json')
 const tempFile=path.join(dataDir,'access-control.tmp.json')
-const allowedMenus=['command','industry-news','settlement','alerts','meeting','team','workforce','tasks','reports','growth','salary','user-management','role-management','ai-settings']
+const organizationSeedFile=path.join(path.dirname(fileURLToPath(import.meta.url)),'seeds','organization-directory.json')
+const allowedMenus=['command','industry-news','settlement','alerts','meeting','team','workforce','tasks','excellence','reports','growth','salary','user-management','role-management','ai-settings']
 const now=()=>new Date().toISOString()
 let accessCache=null
 let databaseMode=false
+const organizationDirectory=JSON.parse(fs.readFileSync(organizationSeedFile,'utf8'))
+const organizationMemberByJobNo=new Map(organizationDirectory.members.map(member=>[member.jobNo.toLowerCase(),member]))
 const fail=(status,message,code='ACCESS_VALIDATION_ERROR')=>{throw Object.assign(new Error(message),{status,code})}
 const uniqueMenus=menus=>Array.from(new Set((Array.isArray(menus)?menus:[]).filter(menu=>allowedMenus.includes(menu))))
 const hashPassword=password=>{
@@ -25,15 +29,49 @@ const verifyPassword=(password,encoded)=>{
 
 const roleSeeds=()=>[
  {id:'system-admin',name:'系统管理员',code:'SYSTEM_ADMIN',level:'系统级',description:'拥有全部业务模块和系统管理权限；内置角色不可删除。',memberCount:0,menus:[...allowedMenus],builtIn:true,status:'active'},
- {id:'operation-director',name:'运营总监',code:'OPERATION_DIRECTOR',level:'基地级',description:'关注基地经营、甲方动态、行业舆情、结费回款和组织效能。',memberCount:0,menus:['command','industry-news','settlement','alerts','workforce','tasks','reports','growth','salary'],builtIn:true,status:'active'},
- {id:'customer-manager',name:'客服经理',code:'CUSTOMER_MANAGER',level:'业务线级',description:'负责业务KPI、组织效能、主管及班组管理。',memberCount:0,menus:['command','alerts','team','workforce','tasks','reports','growth'],builtIn:true,status:'active'},
- {id:'customer-supervisor',name:'客服主管',code:'CUSTOMER_SUPERVISOR',level:'区域级',description:'负责现场调度、绩效改善、班长履职和质量风险。',memberCount:0,menus:['command','alerts','meeting','team','workforce','tasks','reports','growth'],builtIn:true,status:'active'},
- {id:'team-leader',name:'客服班长',code:'TEAM_LEADER',level:'班组级',description:'负责班前会、班组看数、面谈辅导及任务闭环。',memberCount:0,menus:['command','alerts','meeting','team','workforce','tasks','reports','growth','salary'],builtIn:true,status:'active'},
- {id:'customer-agent',name:'客服专员',code:'CUSTOMER_AGENT',level:'个人级',description:'查看个人绩效、培训任务、排班和薪资信息。',memberCount:0,menus:['command','workforce','tasks','growth','salary'],builtIn:true,status:'active'},
- {id:'quality-specialist',name:'质检专员',code:'QUALITY_SPECIALIST',level:'专业岗',description:'AI辅助质检、质量分析、合规事件和整改闭环。',memberCount:0,menus:['command','alerts','tasks','reports','growth'],builtIn:true,status:'active'},
- {id:'training-manager',name:'培训主管',code:'TRAINING_MANAGER',level:'专业岗',description:'培训需求、课程计划、AI教官及培训效果评估。',memberCount:0,menus:['command','tasks','reports','growth'],builtIn:true,status:'active'},
+ {id:'operation-director',name:'运营总监',code:'OPERATION_DIRECTOR',level:'基地级',description:'关注基地经营、甲方动态、行业舆情、结费回款和组织效能。',memberCount:0,menus:['command','industry-news','settlement','alerts','meeting','workforce','tasks','excellence','reports','growth','salary'],builtIn:true,status:'active'},
+ {id:'customer-manager',name:'客服经理',code:'CUSTOMER_MANAGER',level:'业务线级',description:'负责业务KPI、组织效能、主管及班组管理。',memberCount:0,menus:['command','alerts','meeting','team','workforce','tasks','excellence','reports','growth'],builtIn:true,status:'active'},
+ {id:'customer-supervisor',name:'客服主管',code:'CUSTOMER_SUPERVISOR',level:'区域级',description:'负责现场调度、绩效改善、班长履职和质量风险。',memberCount:0,menus:['command','alerts','meeting','team','workforce','tasks','excellence','reports','growth'],builtIn:true,status:'active'},
+ {id:'team-leader',name:'客服班长',code:'TEAM_LEADER',level:'班组级',description:'负责班前会、班组看数、面谈辅导及任务闭环。',memberCount:0,menus:['command','alerts','meeting','team','workforce','tasks','excellence','reports','growth','salary'],builtIn:true,status:'active'},
+ {id:'customer-agent',name:'客服专员',code:'CUSTOMER_AGENT',level:'个人级',description:'查看个人绩效、培训任务、排班、先进经验和薪资信息。',memberCount:0,menus:['command','meeting','workforce','tasks','excellence','growth','salary'],builtIn:true,status:'active'},
+ {id:'quality-specialist',name:'质检专员',code:'QUALITY_SPECIALIST',level:'专业岗',description:'AI辅助质检、质量分析、先进录音和整改闭环。',memberCount:0,menus:['command','alerts','meeting','tasks','excellence','reports','growth'],builtIn:true,status:'active'},
+ {id:'training-manager',name:'培训主管',code:'TRAINING_MANAGER',level:'专业岗',description:'培训需求、课程计划、AI教官及培训效果评估。',memberCount:0,menus:['command','meeting','tasks','excellence','reports','growth'],builtIn:true,status:'active'},
  {id:'hrbp-manager',name:'HRBP经理',code:'HRBP_MANAGER',level:'专业岗',description:'人员档案、流失预警、招聘缺口和组织效能。',memberCount:0,menus:['command','alerts','workforce','tasks','reports','growth','salary'],builtIn:true,status:'active'},
+ {id:'operations-support',name:'运营支持',code:'OPERATIONS_SUPPORT',level:'专业岗',description:'适用于调度、数据、知识、工号和专项管理岗位；默认采用最小权限，可按账号追加模块。',memberCount:0,menus:['command','tasks','reports'],builtIn:true,status:'active'},
 ]
+
+const synchronizeBuiltInRoles=state=>{
+ let changed=false
+ for(const seed of roleSeeds()){
+  const existing=state.roles.find(role=>role.id===seed.id)
+  if(!existing){state.roles.push(seed);changed=true;continue}
+  if(seed.builtIn&&JSON.stringify(existing.menus)!==JSON.stringify(seed.menus)){existing.menus=[...seed.menus];changed=true}
+ }
+ return changed
+}
+const synchronizeExcellenceMenus=state=>{
+ const action='开放固化先进模块，并按岗位配置经验与录音查阅权限'
+ if(state.audit?.some(item=>item.action===action))return false
+ for(const id of ['system-admin','operation-director','customer-manager','customer-supervisor','team-leader','customer-agent','quality-specialist','training-manager']){
+  const role=state.roles.find(item=>item.id===id)
+  if(role)role.menus=uniqueMenus([...(role.menus||[]),'excellence'])
+ }
+ state.audit.unshift({at:now(),actor:'系统',action})
+ return true
+}
+
+const synchronizeProfilesWithOrganization=state=>{
+ let changed=false
+ state.users=state.users.map(user=>{
+  const member=organizationMemberByJobNo.get(String(user.jobNo||'').toLowerCase())
+  if(!member)return user
+  const next={...user,name:member.name,jobTitle:member.jobTitle,department:member.department,updatedAt:now()}
+  if(user.name===next.name&&user.jobTitle===next.jobTitle&&user.department===next.department)return user
+  changed=true
+  return next
+ })
+ return changed
+}
 
 const bootstrapPassword=()=>{
  const value=String(process.env.BOOTSTRAP_ADMIN_PASSWORD||'').trim()
@@ -42,10 +80,10 @@ const bootstrapPassword=()=>{
  throw Object.assign(new Error('首次部署必须通过 BOOTSTRAP_ADMIN_PASSWORD 提供至少8位的管理员初始密码'),{code:'BOOTSTRAP_PASSWORD_REQUIRED'})
 }
 const initialState=()=>({
- version:4,
+ version:7,
  users:[
-  {id:'U001',name:String(process.env.BOOTSTRAP_ADMIN_NAME||(process.env.NODE_ENV==='test'?'李燕鹏':'系统管理员')).slice(0,40),jobNo:String(process.env.BOOTSTRAP_ADMIN_JOB_NO||(process.env.NODE_ENV==='test'?'JZ053684':'admin')).slice(0,40),roleId:'system-admin',jobTitle:'系统管理员',department:'河北基地',phone:'',email:'',status:'active',passwordHash:hashPassword(bootstrapPassword()),forceChangePassword:true,passwordChangedAt:'',failedLoginCount:0,lockedUntil:'',lastLoginAt:'',lastLoginIp:'',sessionVersion:1,moduleOverrides:[],createdAt:now(),updatedAt:now()},
-  ...(process.env.NODE_ENV==='test'?[{id:'U002',name:'测试经理',jobNo:'JZ001218',roleId:'customer-manager',jobTitle:'客服经理',department:'河北基地 · 10015升投',phone:'',email:'',status:'active',passwordHash:hashPassword('000000'),forceChangePassword:true,passwordChangedAt:'',failedLoginCount:0,lockedUntil:'',lastLoginAt:'',lastLoginIp:'',sessionVersion:1,moduleOverrides:[],createdAt:now(),updatedAt:now()}]:[]),
+  {id:'U001',name:String(process.env.BOOTSTRAP_ADMIN_NAME||(process.env.NODE_ENV==='test'?'李燕鹏':'系统管理员')).slice(0,40),jobNo:String(process.env.BOOTSTRAP_ADMIN_JOB_NO||(process.env.NODE_ENV==='test'?'JZ053684':'admin')).slice(0,40),roleId:'system-admin',jobTitle:process.env.NODE_ENV==='test'?'运营管理总监':'系统管理员',department:process.env.NODE_ENV==='test'?'河北基地 · 客户驱动部':'河北基地',phone:'',email:'',status:'active',passwordHash:hashPassword(bootstrapPassword()),forceChangePassword:true,passwordChangedAt:'',failedLoginCount:0,lockedUntil:'',lastLoginAt:'',lastLoginIp:'',sessionVersion:1,moduleOverrides:[],createdAt:now(),updatedAt:now()},
+  ...(process.env.NODE_ENV==='test'?[{id:'U002',name:'吴欣欣',jobNo:'JZ001218',roleId:'customer-manager',jobTitle:'运营经理',department:'河北基地',phone:'',email:'',status:'active',passwordHash:hashPassword('000000'),forceChangePassword:true,passwordChangedAt:'',failedLoginCount:0,lockedUntil:'',lastLoginAt:'',lastLoginIp:'',sessionVersion:1,moduleOverrides:[],createdAt:now(),updatedAt:now()}]:[]),
  ],
  roles:roleSeeds(),
  audit:[{at:now(),actor:'系统',action:'初始化用户与角色权限配置'}],
@@ -83,7 +121,24 @@ const loadLocalAccess=()=>{
    }
    parsed.version=4
    parsed.audit.unshift({at:now(),actor:'系统',action:'开放总监与HRBP培训面谈模块权限'})
-   return writeLocal(parsed)
+  }
+  if(Number(parsed.version||1)<5){
+   synchronizeProfilesWithOrganization(parsed)
+   parsed.version=5
+   parsed.audit.unshift({at:now(),actor:'系统',action:`同步《${organizationDirectory.source.fileName}》组织、项目与岗位信息（${organizationDirectory.source.totalMembers}人）`})
+  }
+  if(Number(parsed.version||1)<6){
+   synchronizeBuiltInRoles(parsed)
+   parsed.version=6
+   parsed.audit.unshift({at:now(),actor:'系统',action:'新增运营支持最小权限角色并完成组织岗位映射'})
+  }
+  if(Number(parsed.version||1)<7){
+   for(const id of ['system-admin','operation-director','customer-manager','customer-supervisor','team-leader','customer-agent','quality-specialist','training-manager']){
+    const role=parsed.roles.find(item=>item.id===id)
+    if(role)role.menus=uniqueMenus([...(role.menus||[]),'excellence'])
+   }
+   parsed.version=7
+   parsed.audit.unshift({at:now(),actor:'系统',action:'开放固化先进模块，并按岗位配置经验与录音查阅权限'})
   }
   parsed.users=parsed.users.map(user=>({...user,passwordChangedAt:user.passwordChangedAt||'',failedLoginCount:Number(user.failedLoginCount||0),lockedUntil:user.lockedUntil||'',lastLoginAt:user.lastLoginAt||'',lastLoginIp:user.lastLoginIp||'',sessionVersion:Number(user.sessionVersion||1)}))
   return parsed
@@ -172,6 +227,10 @@ export const initializeAccessPersistence=async()=>{
   await persistAccess(seed)
  }
  accessCache=await accessFromDatabase()
+ const profilesChanged=synchronizeProfilesWithOrganization(accessCache)
+ const rolesChanged=synchronizeBuiltInRoles(accessCache)
+ const excellenceChanged=synchronizeExcellenceMenus(accessCache)
+ if(profilesChanged||rolesChanged||excellenceChanged)await persistAccess(accessCache)
  databaseMode=true
  return {mode:'mysql',imported:!count,users:accessCache.users.length}
 }
@@ -187,7 +246,7 @@ const publicUser=user=>{
 }
 export const publicAccess=state=>{
  const memberCounts=new Map(state.roles.map(role=>[role.id,state.users.filter(user=>user.roleId===role.id).length]))
- return {users:state.users.map(publicUser),roles:state.roles.map(role=>({...role,memberCount:memberCounts.get(role.id)||0})),audit:state.audit.slice(0,100)}
+ return {users:state.users.map(publicUser),roles:state.roles.map(role=>({...role,memberCount:memberCounts.get(role.id)||0})),organization:organizationDirectory,audit:state.audit.slice(0,100)}
 }
 
 export function requirePermission(state,actorUserId,permission){
