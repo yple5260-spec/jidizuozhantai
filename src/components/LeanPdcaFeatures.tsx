@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import { Role } from '../types'
 import { WorkflowMutationResult, WorkflowState, WorkflowTask, workflowApi } from '../data/workflowApi'
-import { TaskImprovement, taskApi } from '../data/taskApi'
-import { AlertTriangle, BarChart3, CalendarRange, CheckCircle2, ChevronRight, Clock3, Download, ListChecks, MessageSquareText, Paperclip, Plus, RefreshCw, Save, Search, ShieldCheck, Sparkles, Target, TrendingUp, UploadCloud, UserCog, X } from './Icons'
+import { TaskExperienceMatch, TaskImprovement, taskApi } from '../data/taskApi'
+import { AlertTriangle, BarChart3, CalendarRange, CheckCircle2, ChevronRight, Clock3, Download, Headphones, ListChecks, MessageSquareText, Paperclip, Plus, RefreshCw, Save, Search, ShieldCheck, Sparkles, Target, TrendingUp, UploadCloud, UserCog, X } from './Icons'
 
 type Runner=(action:()=>Promise<WorkflowMutationResult>,success:string)=>boolean|void|Promise<boolean|void>
 const roleLabels:Record<string,string>={director:'运营总监',manager:'客服经理',supervisor:'客服主管',leader:'客服班长',employee:'客服专员',quality:'质检专员',training:'培训主管',hrbp:'HRBP经理'}
@@ -28,10 +28,12 @@ const localDateTime=(offsetHours:number)=>{
  return shifted.toISOString().slice(0,16)
 }
 const fmt=(value?:string)=>value?new Date(value).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}):'待定'
-const statusGroup=(status:string)=>status==='todo'?'published':status==='closed'?'closed':status==='pending_verification'?'verify':'doing'
+const riskStatuses=['returned_to_origin','escalated','exception_pending']
+const statusGroup=(status:string)=>status==='todo'?'published':status==='closed'?'closed':status==='pending_verification'?'verify':riskStatuses.includes(status)?'risk':'doing'
 
 export const workflowTaskVisibleForRole=(task:WorkflowTask,role:Role)=>{
- if(role==='director')return true
+ if(task.voidedAt)return role==='director'||role==='manager'
+ if(role==='director'||role==='manager')return true
  if(task.workflowKind==='lean_directive')return task.initiatorRole===role||task.executionOwnerRole===role||task.ownerRole===role||task.verificationRole===role
  if(task.workflowKind==='ai_action')return task.originRole===role||task.ownerRole===role||task.verificationRole===role
  if(task.workflowKind==='meeting_action')return task.originRole===role||task.ownerRole===role||task.verificationRole===role
@@ -43,7 +45,7 @@ export const workflowTaskVisibleForRole=(task:WorkflowTask,role:Role)=>{
 
 export function LeanPdcaDashboard({role,state,busy,run,notify,onOpenTask}:{role:Role;state:WorkflowState;busy:boolean;run:Runner;notify:(text:string)=>void;onOpenTask:(taskId:string)=>void}){
  const [days,setDays]=useState('30')
- const [lifecycle,setLifecycle]=useState<'active'|'archived'|'all'>('active')
+ const [lifecycle,setLifecycle]=useState<'active'|'archived'|'voided'|'all'>('active')
  const [open,setOpen]=useState(false)
  const [catalogFiltersOpen,setCatalogFiltersOpen]=useState(false)
  const [catalogOwner,setCatalogOwner]=useState('all')
@@ -51,16 +53,21 @@ export function LeanPdcaDashboard({role,state,busy,run,notify,onOpenTask}:{role:
  const [catalogKeyword,setCatalogKeyword]=useState('')
  const [catalogStartDate,setCatalogStartDate]=useState('')
  const [catalogEndDate,setCatalogEndDate]=useState('')
+ const [businessMetrics,setBusinessMetrics]=useState<Awaited<ReturnType<typeof workflowApi.pdcaBusinessMetrics>>|null>(null)
  const canRequest=Boolean(requestRoles[role]?.length)
  useEffect(()=>{
   setOpen(false);setCatalogFiltersOpen(false);setCatalogOwner('all');setCatalogStatus('all')
   setCatalogKeyword('');setCatalogStartDate('');setCatalogEndDate('')
  },[role])
+ useEffect(()=>{
+  if(role!=='manager'&&role!=='director'){setBusinessMetrics(null);return}
+  workflowApi.pdcaBusinessMetrics(role).then(setBusinessMetrics).catch(()=>setBusinessMetrics(null))
+ },[role,state.tasks])
  const filtered=useMemo(()=>{
   const duration=days==='all'?Infinity:Number(days)*24*60*60*1000
   const roleScoped=state.tasks.filter(task=>workflowTaskVisibleForRole(task,role))
   return roleScoped.filter(task=>{
-   const lifecycleMatch=lifecycle==='all'||(lifecycle==='archived'?Boolean(task.archivedAt):!task.archivedAt)
+   const lifecycleMatch=lifecycle==='voided'?Boolean(task.voidedAt):lifecycle==='archived'?Boolean(task.archivedAt)&&!task.voidedAt:lifecycle==='all'?!task.voidedAt:!task.voidedAt&&!task.archivedAt&&task.status!=='closed'
    const timeMatch=duration===Infinity||!task.createdAt||Date.now()-Date.parse(task.createdAt)<=duration
    return lifecycleMatch&&timeMatch
   })
@@ -85,6 +92,7 @@ export function LeanPdcaDashboard({role,state,busy,run,notify,onOpenTask}:{role:
   published:filtered.filter(task=>statusGroup(task.status)==='published').length,
   doing:filtered.filter(task=>statusGroup(task.status)==='doing').length,
   verify:filtered.filter(task=>statusGroup(task.status)==='verify').length,
+  risk:filtered.filter(task=>statusGroup(task.status)==='risk').length,
   closed:filtered.filter(task=>statusGroup(task.status)==='closed').length,
  }
  const slaCounts={
@@ -100,15 +108,17 @@ export function LeanPdcaDashboard({role,state,busy,run,notify,onOpenTask}:{role:
  },{})).sort((a,b)=>b.total-a.total)
  const max=Math.max(1,...workload.map(item=>item.total))
   return <section className="lean-dashboard">
-  <header><div><span>精益任务驾驶舱</span><h2>从任务结构看到执行力与改善结果</h2><p>第一层聚焦任务统计与风险，点击任务后进入第二层执行详情。</p></div><div className="lean-dashboard-actions"><label><select aria-label="任务档案范围" value={lifecycle} onChange={event=>setLifecycle(event.target.value as 'active'|'archived'|'all')}><option value="active">在管任务</option><option value="archived">已归档</option><option value="all">全部档案</option></select></label><label><CalendarRange size={15}/><select value={days} onChange={event=>setDays(event.target.value)}><option value="7">近7天</option><option value="30">近30天</option><option value="90">近90天</option><option value="all">全部周期</option></select></label>{canRequest&&<button onClick={()=>setOpen(true)}><Plus size={15}/>发起任务需求</button>}</div></header>
-  <div className="lean-sla-strip"><span className={slaCounts.overdue?'risk':''}><AlertTriangle size={14}/>逾期任务 <b>{slaCounts.overdue}</b></span><span className={slaCounts.followUp?'warning':''}><MessageSquareText size={14}/>跟进到期 <b>{slaCounts.followUp}</b></span><span><Clock3 size={14}/>4小时内到期 <b>{slaCounts.dueSoon}</b></span><small>按当前执行/验收节点自动计算，管理者无需逐单翻查截止时间。</small></div>
+  <header><div><span>精益任务驾驶舱</span><h2>从任务结构看到执行力与改善结果</h2><p>第一层聚焦任务统计与风险，点击任务后进入第二层执行详情。</p></div><div className="lean-dashboard-actions"><label><select aria-label="任务档案范围" value={lifecycle} onChange={event=>setLifecycle(event.target.value as 'active'|'archived'|'voided'|'all')}><option value="active">在管任务</option><option value="archived">已归档</option><option value="all">全部有效档案</option>{(role==='manager'||role==='director')&&<option value="voided">作废归类</option>}</select></label><label><CalendarRange size={15}/><select value={days} onChange={event=>setDays(event.target.value)}><option value="7">近7天</option><option value="30">近30天</option><option value="90">近90天</option><option value="all">全部周期</option></select></label>{canRequest&&lifecycle!=='voided'&&<button onClick={()=>setOpen(true)}><Plus size={15}/>发起任务需求</button>}</div></header>
+  {lifecycle==='voided'&&<div className="lean-voided-intro"><AlertTriangle size={18}/><div><strong>作废任务独立归类</strong><p>作废任务不再出现在任何岗位的在管、待办或历史档案中，仅经理与总监可以查阅原状态、作废原因和完整操作记录。</p></div><b>{filtered.length}项</b></div>}
+  {lifecycle!=='voided'&&<><div className="lean-sla-strip"><span className={slaCounts.overdue?'risk':''}><AlertTriangle size={14}/>逾期任务 <b>{slaCounts.overdue}</b></span><span className={slaCounts.followUp?'warning':''}><MessageSquareText size={14}/>跟进到期 <b>{slaCounts.followUp}</b></span><span><Clock3 size={14}/>4小时内到期 <b>{slaCounts.dueSoon}</b></span><small>按当前执行/验收节点自动计算，管理者无需逐单翻查截止时间。</small></div>
+  {businessMetrics&&<div className="lean-business-outcomes"><header><TrendingUp size={16}/><strong>PDCA经营闭环成效</strong><small>衡量是否真正达标，而不只统计是否关单</small></header><div>{[['闭环率',businessMetrics.closeRate],['目标达成率',businessMetrics.targetAttainmentRate],['按期完成率',businessMetrics.onTimeRate],['例外关闭率',businessMetrics.exceptionRate],['复发重开率',businessMetrics.reopenRate],['经验转化率',businessMetrics.experienceConversionRate]].map(([label,value])=><article key={String(label)}><span>{label}</span><strong>{value}%</strong></article>)}</div></div>}
   <div className="lean-stat-grid">
-   {[['published','刚发布',counts.published,'#1f6feb'],['doing','执行中',counts.doing,'#df8b16'],['verify','待验证',counts.verify,'#7c3aed'],['closed','已完成',counts.closed,'#168565']].map(item=><article key={String(item[0])} style={{'--lean-color':item[3]} as CSSProperties}><span>{item[1]}</span><strong>{item[2]}</strong><small>{filtered.length?`${Math.round(Number(item[2])/filtered.length*100)}%`:'0%'}</small></article>)}
+   {[['published','刚发布',counts.published,'#1f6feb'],['doing','执行中',counts.doing,'#df8b16'],['verify','待验证',counts.verify,'#7c3aed'],['risk','整改/升级',counts.risk,'#d14343'],['closed','已完成',counts.closed,'#168565']].map(item=><article key={String(item[0])} style={{'--lean-color':item[3]} as CSSProperties}><span>{item[1]}</span><strong>{item[2]}</strong><small>{filtered.length?`${Math.round(Number(item[2])/filtered.length*100)}%`:'0%'}</small></article>)}
   </div>
-  <div className="lean-dashboard-grid"><div><header><BarChart3 size={17}/><strong>任务处理量分布</strong><small>识别负荷不均与管理覆盖盲区</small></header>{workload.length?<div className="lean-workload-list">{workload.slice(0,8).map((item,index)=><div key={`${item.role}-${item.name}`}><span>{index+1}</span><p><strong>{item.name}</strong><small>{item.role} · 已闭环{item.closed}项</small></p><i><b style={{width:`${item.total/max*100}%`}}></b></i><em>{item.total}项</em></div>)}</div>:<p className="lean-empty">当前周期暂无任务</p>}</div><div><header><Clock3 size={17}/><strong>近期任务清单</strong><small>{filtered.length}项</small></header><div className="lean-recent-list">{filtered.slice(0,6).map(task=><button type="button" onClick={()=>onOpenTask(task.id)} key={task.id}><span className={statusGroup(task.status)}></span><div><strong>{task.title}</strong><small>{task.executionOwner||task.owner} · 提交{fmt(task.submitDueAt||task.dueAt)}</small></div><em>{task.metric?.label||task.type}</em><ChevronRight size={15}/></button>)}</div></div></div>
+  <div className="lean-dashboard-grid"><div><header><BarChart3 size={17}/><strong>任务处理量分布</strong><small>识别负荷不均与管理覆盖盲区</small></header>{workload.length?<div className="lean-workload-list">{workload.slice(0,8).map((item,index)=><div key={`${item.role}-${item.name}`}><span>{index+1}</span><p><strong>{item.name}</strong><small>{item.role} · 已闭环{item.closed}项</small></p><i><b style={{width:`${item.total/max*100}%`}}></b></i><em>{item.total}项</em></div>)}</div>:<p className="lean-empty">当前周期暂无任务</p>}</div><div><header><Clock3 size={17}/><strong>近期任务清单</strong><small>{filtered.length}项</small></header><div className="lean-recent-list">{filtered.slice(0,6).map(task=><button type="button" onClick={()=>onOpenTask(task.id)} key={task.id}><span className={statusGroup(task.status)}></span><div><strong>{task.title}</strong><small>{task.executionOwner||task.owner} · 提交{fmt(task.submitDueAt||task.dueAt)}</small></div><em>{task.metric?.label||task.type}</em><ChevronRight size={15}/></button>)}</div></div></div></>}
   <section className="lean-task-catalog"><header><div><ListChecks size={17}/><strong>任务单清单</strong><small>点击任务单查看详情并执行</small></div><div className="lean-catalog-tools"><span>{catalogTasks.length}{hasCatalogFilters?` / ${filtered.length}`:''}项</span><button type="button" className={catalogFiltersOpen||hasCatalogFilters?'active':''} onClick={()=>setCatalogFiltersOpen(value=>!value)}><Search size={14}/>筛选{hasCatalogFilters&&<b></b>}</button></div></header>
-   {catalogFiltersOpen&&<div className="lean-catalog-filters"><label><span>执行人</span><select aria-label="按执行人筛选" value={catalogOwner} onChange={event=>setCatalogOwner(event.target.value)}><option value="all">全部执行人</option>{catalogOwners.map(owner=><option value={owner} key={owner}>{owner}</option>)}</select></label><label className="lean-catalog-date"><span>执行时间</span><div><input aria-label="执行开始日期" type="date" value={catalogStartDate} max={catalogEndDate||undefined} onInput={event=>setCatalogStartDate(event.currentTarget.value)}/><i>至</i><input aria-label="执行结束日期" type="date" value={catalogEndDate} min={catalogStartDate||undefined} onInput={event=>setCatalogEndDate(event.currentTarget.value)}/></div></label><label><span>任务状态</span><select aria-label="按任务状态筛选" value={catalogStatus} onChange={event=>setCatalogStatus(event.target.value)}><option value="all">全部状态</option><option value="published">刚发布</option><option value="doing">执行中</option><option value="verify">待验证</option><option value="closed">已完成</option></select></label><label className="lean-catalog-keyword"><span>关键词</span><div><Search size={14}/><input aria-label="按关键词筛选" value={catalogKeyword} onChange={event=>setCatalogKeyword(event.target.value)} placeholder="任务标题、编号、人员、问题"/></div></label><button type="button" className="lean-filter-clear" disabled={!hasCatalogFilters} onClick={clearCatalogFilters}><X size={14}/>清空</button></div>}
-   {catalogTasks.length?<div>{catalogTasks.map(task=><button type="button" onClick={()=>onOpenTask(task.id)} key={task.id}><span className={`lean-catalog-status ${statusGroup(task.status)}`}></span><div><strong>{task.title}</strong><small>{task.id} · {task.sourceLabel||task.type} · {task.executionOwner||task.owner}</small></div><em>{task.archivedAt?'已归档':task.status==='closed'?'已完成':task.status==='pending_verification'?'待验证':task.status==='todo'?'刚发布':'执行中'}</em><time>{fmt(task.slaDeadline||task.submitDueAt||task.dueAt)}</time><ChevronRight size={16}/></button>)}</div>:<p className="lean-empty">{hasCatalogFilters?'没有符合当前筛选条件的任务单':'当前筛选范围暂无任务单'}</p>}</section>
+   {catalogFiltersOpen&&<div className="lean-catalog-filters"><label><span>执行人</span><select aria-label="按执行人筛选" value={catalogOwner} onChange={event=>setCatalogOwner(event.target.value)}><option value="all">全部执行人</option>{catalogOwners.map(owner=><option value={owner} key={owner}>{owner}</option>)}</select></label><label className="lean-catalog-date"><span>执行时间</span><div><input aria-label="执行开始日期" type="date" value={catalogStartDate} max={catalogEndDate||undefined} onInput={event=>setCatalogStartDate(event.currentTarget.value)}/><i>至</i><input aria-label="执行结束日期" type="date" value={catalogEndDate} min={catalogStartDate||undefined} onInput={event=>setCatalogEndDate(event.currentTarget.value)}/></div></label><label><span>任务状态</span><select aria-label="按任务状态筛选" value={catalogStatus} onChange={event=>setCatalogStatus(event.target.value)}><option value="all">全部状态</option><option value="published">刚发布</option><option value="doing">执行中</option><option value="verify">待验证</option><option value="risk">整改/升级/例外审批</option><option value="closed">已完成</option></select></label><label className="lean-catalog-keyword"><span>关键词</span><div><Search size={14}/><input aria-label="按关键词筛选" value={catalogKeyword} onChange={event=>setCatalogKeyword(event.target.value)} placeholder="任务标题、编号、人员、问题"/></div></label><button type="button" className="lean-filter-clear" disabled={!hasCatalogFilters} onClick={clearCatalogFilters}><X size={14}/>清空</button></div>}
+   {catalogTasks.length?<div>{catalogTasks.map(task=><button type="button" className={task.voidedAt?'voided-task-row':''} onClick={()=>onOpenTask(task.id)} key={task.id}><span className={`lean-catalog-status ${task.voidedAt?'voided':statusGroup(task.status)}`}></span><div><strong>{task.title}</strong><small>{task.id} · {task.sourceLabel||task.type} · {task.voidedAt?`由${task.voidedBy}作废`:task.executionOwner||task.owner}</small></div><em>{task.voidedAt?'已作废':task.archivedAt?'已归档':task.status==='closed'?'已完成':task.status==='pending_verification'?'待验证':riskStatuses.includes(task.status)?'整改/升级':task.status==='todo'?'刚发布':'执行中'}</em><time>{fmt(task.voidedAt||task.slaDeadline||task.submitDueAt||task.dueAt)}</time><ChevronRight size={16}/></button>)}</div>:<p className="lean-empty">{hasCatalogFilters?'没有符合当前筛选条件的任务单':lifecycle==='voided'?'当前没有作废任务':'当前筛选范围暂无任务单'}</p>}</section>
   {open&&<TaskRequestDialog role={role} busy={busy} run={run} notify={notify} close={()=>setOpen(false)}/>}
  </section>
 }
@@ -117,7 +127,8 @@ export type TaskRequestPrefill=Partial<{
  title:string;issueCategory:string;issueLocation:string;problem:string;target:string;successCriteria:string;actionPlan:string
  metricCode:string;metricLabel:string;metricUnit:string;metricDirection:'higher'|'lower';baselineValue:number;targetValue:number
  plannedStartAt:string;submitDueAt:string;verificationDueAt:string;aiRationale:string;employeeCode:string;employeeName:string;team:string
- targetRole:string;owner:string
+ targetRole:string;owner:string;experienceId:string
+ metricSet:{code:string;label:string;unit:string;direction:'higher'|'lower';baseline:number|null;target:number|null;required:boolean}[]
 }>
 
 export function TaskRequestDialog({role,busy,run,notify,close,initial}:{role:Role;busy:boolean;run:Runner;notify:(text:string)=>void;close:()=>void;initial?:TaskRequestPrefill}){
@@ -132,10 +143,11 @@ export function TaskRequestDialog({role,busy,run,notify,close,initial}:{role:Rol
   actionPlan:'复盘近3通低满意录音，完成服务四动作校准并每日抽检2通新录音。',
   metricCode:'satisfaction',metricLabel:'人工服务满意率',metricUnit:'%',metricDirection:'higher' as 'higher'|'lower',
   baselineValue:93.2,targetValue:97.2,plannedStartAt:localDateTime(1),submitDueAt:localDateTime(24),verificationDueAt:localDateTime(48),
-  aiRationale:'',employeeCode:'JR10776',employeeName:'李倩',team:'普通客服一区·8班',
+  aiRationale:'',employeeCode:'JR10776',employeeName:'李倩',team:'普通客服一区·8班',experienceId:'',
   ...initial,
  }))
  const [suggesting,setSuggesting]=useState(false)
+ const [experienceMatches,setExperienceMatches]=useState<TaskExperienceMatch[]>([])
  const [submitting,setSubmitting]=useState(false)
  const [formError,setFormError]=useState('')
  const set=(field:string,value:string|number)=>setForm(current=>({...current,[field]:value}))
@@ -145,6 +157,7 @@ export function TaskRequestDialog({role,busy,run,notify,close,initial}:{role:Rol
    const result=await taskApi.targetSuggestion({role,problem:form.problem,issueCategory:form.issueCategory,issueLocation:form.issueLocation,baselineValue:form.baselineValue,metricCode:form.metricCode})
    const suggestion=result.suggestion
    setForm(current=>({...current,...suggestion,actionPlan:suggestion.actionSuggestion,aiRationale:suggestion.rationale}))
+   setExperienceMatches(result.experienceMatches||[])
    notify(`${result.provider==='DeepSeek'?'AI':'系统规则'}已生成可量化目标建议`)
   }catch(error){notify(error instanceof Error?error.message:'目标建议生成失败')}finally{setSuggesting(false)}
  }
@@ -176,6 +189,7 @@ export function TaskRequestDialog({role,busy,run,notify,close,initial}:{role:Rol
   <div className="lean-form-row"><label>问题分类<input value={form.issueCategory} onChange={event=>set('issueCategory',event.target.value)}/></label><label>具体定位<input value={form.issueLocation} onChange={event=>set('issueLocation',event.target.value)} placeholder="班组 / 员工 / 工号 / 业务场景"/></label></div>
   <label>具体问题<textarea value={form.problem} onChange={event=>set('problem',event.target.value)}/></label>
   <div className="lean-ai-suggest"><div><Sparkles size={17}/><span><strong>目标建议助手</strong><small>结合问题类型、基线和呼叫中心管理规则生成目标与验收标准</small></span></div><button disabled={suggesting||!form.problem.trim()} onClick={suggest}>{suggesting?<RefreshCw className="spin" size={15}/>:<Sparkles size={15}/>}AI建议目标</button></div>
+  {experienceMatches.length>0&&<div className="lean-experience-recommend"><header><Sparkles size={15}/><strong>同类先进经验推荐</strong><small>最多3条，仅来自量化达标且已发布经验</small></header>{experienceMatches.map(item=><article className={form.experienceId===item.id?'applied':''} key={item.id}><span>{item.matchScore}%</span><div><strong>{item.title}</strong><small>{item.actionSummary}</small></div><button type="button" onClick={()=>setForm(current=>({...current,experienceId:item.id,actionPlan:item.steps.join('；')||item.actionSummary,aiRationale:`采用经验${item.id}：${item.title}`}))}>{form.experienceId===item.id?'已采用':'采用经验'}</button></article>)}</div>}
   <div className="lean-form-row three"><label>指标名称<input value={form.metricLabel} onChange={event=>set('metricLabel',event.target.value)}/></label><label>当前基线<input type="number" step="0.01" value={form.baselineValue} onChange={event=>set('baselineValue',Number(event.target.value))}/></label><label>目标值<input type="number" step="0.01" value={form.targetValue} onChange={event=>set('targetValue',Number(event.target.value))}/></label></div>
   <label>目标描述<input value={form.target} onChange={event=>set('target',event.target.value)}/></label>
   <label>改善动作<textarea value={form.actionPlan} onChange={event=>set('actionPlan',event.target.value)}/></label>
@@ -186,7 +200,7 @@ export function TaskRequestDialog({role,busy,run,notify,close,initial}:{role:Rol
 
 export function LeanTaskBrief({task}:{task:WorkflowTask}){
  if(!task.problem)return null
- return <div className="lean-task-brief"><div><span>具体问题</span><strong>{task.problem}</strong><small>{task.issueCategory} · {task.issueLocation}</small></div><div><span>量化目标</span><strong>{task.target}</strong><small>基线 {task.metric?.baseline??'—'}{task.metric?.unit} → 目标 {task.metric?.target??'—'}{task.metric?.unit}</small></div><div><span>改善动作</span><strong>{task.actionPlan}</strong><small>验收标准：{task.successCriteria}</small></div></div>
+ return <><div className="lean-trigger-brief"><strong>为什么触发</strong><span>{task.trigger?.type||task.sourceLabel||task.type}{task.trigger?.rule?` · ${task.trigger.rule}`:''}</span><p>{task.trigger?.evidence||task.problem}</p><small>来源：{task.trigger?.source||task.sourceLabel||'任务系统'} · 触发时间 {fmt(task.trigger?.triggeredAt||task.createdAt)}</small></div><div className="lean-task-brief"><div><span>具体问题</span><strong>{task.problem}</strong><small>{task.issueCategory} · {task.issueLocation}</small></div><div><span>量化目标</span><strong>{task.target}</strong><small>基线 {task.metric?.baseline??'—'}{task.metric?.unit} → 目标 {task.metric?.target??'—'}{task.metric?.unit}</small>{(task.metricSet?.length||0)>1&&<p>联合验收：{task.metricSet?.map(metric=>metric.label).join('、')}</p>}</div><div><span>改善动作</span><strong>{task.actionPlan}</strong><small>验收标准：{task.successCriteria}</small></div></div></>
 }
 
 export function LeanTaskNodes({task}:{task:WorkflowTask}){
@@ -201,7 +215,7 @@ export function LeanTaskActions({task,role,busy,run}:{task:WorkflowTask;role:Rol
  const [standardizedAction,setStandardizedAction]=useState('')
  const [actionError,setActionError]=useState('')
  useEffect(()=>{setEvidence('');setActualValue('');setComment('');setStandardizedAction('');setActionError('')},[task.id,task.status])
- if(task.workflowKind!=='lean_directive')return null
+ if(task.workflowKind!=='lean_directive'||task.voidedAt)return null
  const execute=task.executionOwnerRole===role&&task.ownerRole===role
  const verify=task.verificationRole===role&&task.ownerRole===role
  const act=(action:string,payload:Record<string,string>={},message:string)=>run(()=>workflowApi.taskAction(task.id,role,action,payload),message)
@@ -211,18 +225,25 @@ export function LeanTaskActions({task,role,busy,run}:{task:WorkflowTask;role:Rol
   act('lean_submit',{evidence,actualValue},`结果已提交${roleLabels[task.verificationRole||'']}验证`)
  }
  if(task.status==='todo')return <div className="lean-action-box"><h3>接收任务并确认执行窗口</h3><p>{task.actionPlan}</p><div className="lean-deadlines"><span>开始 {fmt(task.plannedStartAt)}</span><span>提交 {fmt(task.submitDueAt)}</span><span>验证 {fmt(task.verificationDueAt)}</span></div><button className="primary" disabled={!execute||busy} onClick={()=>act('lean_start',{},'任务已接收，执行节点开始计时')}>接收并开始执行</button></div>
- if(['doing','returned_to_origin'].includes(task.status))return <div className="lean-action-box">{task.status==='returned_to_origin'&&<div className="lean-return-note"><AlertTriangle size={16}/><div><strong>上级退回要求</strong><p>{task.supervisorGuidance}</p></div></div>}<h3>提交结果数据与执行证据</h3><textarea value={evidence} onChange={event=>{setEvidence(event.target.value);if(actionError)setActionError('')}} placeholder="说明完成的动作、具体结果、录音/工单定位和遗留问题（至少10字）"/><div className="lean-submit-guidance"><span>执行结果为必填，至少10字</span><em className={evidence.trim().length>=10?'ready':''}>{evidence.trim().length}/10</em><span>实际值和附件可按现场情况补充</span></div><label className="lean-actual-value">提交时{task.metric?.label}实际值<div><input type="number" step="0.01" value={actualValue} onChange={event=>setActualValue(event.target.value)} placeholder="可由系统数据补充"/><span>{task.metric?.unit}</span></div></label>{actionError&&<div className="lean-action-error"><AlertTriangle size={15}/>{actionError}</div>}<button className="primary" disabled={!execute||busy} onClick={submitResult}>提交结果并进入验证</button></div>
- if(task.status==='pending_verification')return <div className="lean-action-box"><h3>上级验证与标准化</h3><textarea value={comment} onChange={event=>setComment(event.target.value)} placeholder="结合系统趋势、目标值和附件填写验收结论（至少10字）"/><textarea value={standardizedAction} onChange={event=>setStandardizedAction(event.target.value)} placeholder="验收通过后沉淀的标准动作、话术或检查机制"/><div className="lean-verify-actions"><button className="secondary" disabled={!verify||busy||comment.trim().length<10} onClick={()=>act('lean_verify_return',{comment},'任务未达标，已退回责任岗位整改')}>未达标，退回整改</button><button className="primary" disabled={!verify||busy||comment.trim().length<10} onClick={()=>act('lean_verify_success',{comment,standardizedAction},'任务验收通过，改善动作已固化')}>验收通过并关闭</button></div></div>
+ if(['doing','returned_to_origin'].includes(task.status))return <div className="lean-action-box">{task.status==='returned_to_origin'&&<div className="lean-return-note"><AlertTriangle size={16}/><div><strong>第{task.remediationRound||2}轮整改要求</strong><p>{task.supervisorGuidance}</p></div></div>}<h3>提交结果数据与执行证据</h3><textarea value={evidence} onChange={event=>{setEvidence(event.target.value);if(actionError)setActionError('')}} placeholder="说明完成的动作、具体结果、录音/工单定位和遗留问题（至少10字）"/><div className="lean-submit-guidance"><span>执行结果和实际指标均为必填</span><em className={evidence.trim().length>=10?'ready':''}>{evidence.trim().length}/10</em><span>附件要求：{task.evidencePolicy?.description||'按模板提交'}</span></div><label className="lean-actual-value">提交时{task.metric?.label}实际值<div><input type="number" step="0.01" required value={actualValue} onChange={event=>setActualValue(event.target.value)} placeholder="必填"/><span>{task.metric?.unit}</span></div></label>{actionError&&<div className="lean-action-error"><AlertTriangle size={15}/>{actionError}</div>}<button className="primary" disabled={!execute||busy||!actualValue||evidence.trim().length<10||(task.attachments?.length||0)<Number(task.evidencePolicy?.requiredAttachments||0)} onClick={submitResult}>提交结果并进入验证</button></div>
+ if(task.status==='pending_verification')return <div className="lean-action-box"><h3>上级验证与标准化</h3><textarea value={comment} onChange={event=>setComment(event.target.value)} placeholder="结合系统趋势、目标值和附件填写验收结论；申请例外关闭时至少20字"/><textarea value={standardizedAction} onChange={event=>setStandardizedAction(event.target.value)} placeholder="验收通过后沉淀的标准动作、话术或检查机制"/><div className="lean-verify-actions"><button className="secondary" disabled={!verify||busy||comment.trim().length<10} onClick={()=>act('lean_verify_return',{comment},'任务未达标，已退回责任岗位整改')}>未达标，退回整改</button><button className="secondary" disabled={!verify||busy||comment.trim().length<20} onClick={()=>act('lean_exception_request',{comment},'未达标任务已提交例外关闭审批')}>申请例外关闭</button><button className="primary" disabled={!verify||busy||comment.trim().length<10||!standardizedAction.trim()} onClick={()=>act('lean_verify_success',{comment,standardizedAction},'任务验收通过，已生成先进经验候选')}>达标验收并关闭</button></div></div>
+ if(task.status==='exception_pending')return <div className="lean-action-box"><h3>例外关闭审批</h3><div className="lean-return-note"><AlertTriangle size={16}/><div><strong>{task.exceptionRequest?.requestedBy}申请</strong><p>{task.exceptionRequest?.reason}</p></div></div><textarea value={comment} onChange={event=>setComment(event.target.value)} placeholder="填写例外审批结论（至少10字）"/><div className="lean-verify-actions"><button className="secondary" disabled={task.ownerRole!==role||busy||comment.trim().length<10} onClick={()=>act('lean_exception_approve',{comment,decision:'reject'},'例外关闭未批准，已退回整改')}>拒绝并退回</button><button className="primary" disabled={task.ownerRole!==role||busy||comment.trim().length<10} onClick={()=>act('lean_exception_approve',{comment,decision:'approve'},'任务已例外关闭，不进入先进经验库')}>批准例外关闭</button></div></div>
  return null
 }
 
 export function TaskAttachments({task,role,busy,run,notify}:{task:WorkflowTask;role:Role;busy:boolean;run:Runner;notify:(text:string)=>void}){
+ const [referenceId,setReferenceId]=useState('')
  const upload=async(file?:File)=>{
   if(!file)return
-  if(file.size>5*1024*1024){notify('单个附件不能超过5MB');return}
+  if(file.size>25*1024*1024){notify('单个附件不能超过25MB；较大录音请使用平台引用编号');return}
   await Promise.resolve(run(()=>taskApi.uploadAttachment(task.id,role,task.status==='pending_verification'?'verify':'submit',file),`附件“${file.name}”已保存到MySQL`))
  }
- return <div className="lean-attachments"><header><div><Paperclip size={16}/><strong>节点附件</strong><small>录音说明、截图、工单或分析表将经业务服务保存到 MySQL</small></div><label className={busy?'disabled':''}><UploadCloud size={15}/>上传附件<input type="file" disabled={busy} accept=".pdf,.png,.jpg,.jpeg,.txt,.csv,.xlsx,.docx,.zip,audio/*" onChange={event=>{void upload(event.target.files?.[0]);event.target.value=''}}/></label></header>{task.attachments?.length?<div>{task.attachments.map(item=><a href={taskApi.attachmentUrl(task.id,item.id,role)} key={item.id}><span><Paperclip size={14}/></span><p><strong>{item.fileName}</strong><small>{Math.ceil(item.fileSize/1024)}KB · {item.uploadedBy} · {fmt(item.createdAt)}</small></p><Download size={15}/></a>)}</div>:<p className="lean-empty">暂未上传附件，可在执行、提交或验证节点补充材料。</p>}</div>
+ const addReference=async()=>{
+  if(!referenceId.trim()){notify('请输入录音或业务系统引用编号');return}
+  const result=await Promise.resolve(run(()=>taskApi.addEvidenceReference(task.id,role,task.status==='pending_verification'?'verify':'submit',referenceId.trim()),`证据引用“${referenceId.trim()}”已关联`))
+  if(result!==false)setReferenceId('')
+ }
+ return <div className="lean-attachments"><header><div><Paperclip size={16}/><strong>节点附件</strong><small>{task.voidedAt?'作废后仅保留原附件查阅，不允许继续补充':'小文件直接保存；大录音建议关联录音平台编号，避免重复搬运'}</small></div>{!task.voidedAt&&<label className={busy?'disabled':''}><UploadCloud size={15}/>上传附件<input type="file" disabled={busy} accept=".pdf,.png,.jpg,.jpeg,.txt,.csv,.xlsx,.docx,.zip,audio/*" onChange={event=>{void upload(event.target.files?.[0]);event.target.value=''}}/></label>}</header>{!task.voidedAt&&<div className="lean-evidence-reference"><Headphones size={15}/><input value={referenceId} onChange={event=>setReferenceId(event.target.value)} placeholder="录音平台 / 工单系统引用编号"/><button disabled={busy||!referenceId.trim()} onClick={addReference}>关联证据</button></div>}{task.attachments?.length?<div>{task.attachments.map(item=>item.isReference?<div className="lean-reference-item" key={item.id}><span><Paperclip size={14}/></span><p><strong>{item.referenceType}：{item.referenceId}</strong><small>{item.uploadedBy} · {fmt(item.createdAt)}</small></p><CheckCircle2 size={15}/></div>:<a href={taskApi.attachmentUrl(task.id,item.id,role)} key={item.id}><span><Paperclip size={14}/></span><p><strong>{item.fileName}</strong><small>{Math.ceil(item.fileSize/1024)}KB · {item.uploadedBy} · {fmt(item.createdAt)}</small></p><Download size={15}/></a>)}</div>:<p className="lean-empty">{task.voidedAt?'作废前未上传附件。':'暂未上传附件，可在执行、提交或验证节点补充材料。'}</p>}</div>
 }
 
 export function TaskImprovementPanel({task,role}:{task:WorkflowTask;role:Role}){
@@ -260,6 +281,7 @@ export function TaskComments({task,role,busy,run}:{task:WorkflowTask;role:Role;b
   const result=await Promise.resolve(run(()=>workflowApi.taskAction(task.id,role,'task_comment',{nodeCode,comment:comment.trim()}),`${nodeCode}节点评论已写入任务档案`))
   if(result!==false){setComment('');setOpen(false)}
  }
+ if(task.voidedAt)return null
  return <section className={`pdca-comments ${open?'open':''}`}>
   <header><div><span className="pdca-comment-icon"><MessageSquareText size={18}/></span><div><strong>协同评论</strong><small>围绕P/D/C/A节点沟通，评论留痕但不改变任务责任人</small></div>{comments.length>0&&<em>{comments.length}条</em>}</div><button type="button" className={open?'active':''} aria-expanded={open} onClick={()=>setOpen(value=>!value)}><MessageSquareText size={15}/>{open?'收起评论':'发表评论'}</button></header>
   {!open&&comments.length>0&&<div className="pdca-comment-preview">{comments.slice(0,2).map(record=><article key={record.id}><b>{record.before?.nodeCode||'P'}</b><div><strong>{record.actor}</strong><p>{record.note.replace(/^[PDCA]·[^：]+评论：/,'')}</p></div><time>{fmt(record.createdAt)}</time></article>)}</div>}
@@ -287,6 +309,7 @@ export function LeanTaskManagementPanel({task,role,busy,run}:{task:WorkflowTask;
   setTargetRole(targetRoles[role]?.[0]||'');setTargetOwner(ownerDefaults[targetRoles[role]?.[0]||'']||'')
   setSubmitDueAt(inputDateTime(task.submitDueAt||task.dueAt));setVerificationDueAt(inputDateTime(task.verificationDueAt))
  },[task.id,role,task.nextFollowUpAt,task.submitDueAt,task.dueAt,task.verificationDueAt])
+ if(task.voidedAt)return <div className="lean-voided-record"><AlertTriangle size={18}/><div><strong>任务已作废 · {task.voidedBy}</strong><p>{task.voidReason}</p><small>作废时间 {fmt(task.voidedAt)} · 作废前状态 {task.voidedFromStatus||task.status}</small></div></div>
  if(task.workflowKind!=='lean_directive')return null
  const active=task.status!=='closed'&&!task.archivedAt
  const canIntervene=active&&(role==='director'||role==='manager'||(role==='supervisor'&&['leader','employee'].includes(task.executionOwnerRole||'')))

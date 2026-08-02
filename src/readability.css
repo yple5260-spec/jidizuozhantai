@@ -1,0 +1,49 @@
+/* 培训与面谈：正文阅读字号与系统其他业务页面保持一致。 */
+:is([class^="training-"], [class*=" training-"]) p,
+:is([class^="development-"], [class*=" development-"]) p {
+  font-size: 11px !important;
+}
+
+:is([class^="training-"], [class*=" training-"]) :is(span, small, em, time),
+:is([class^="development-"], [class*=" development-"]) :is(span, small, em, time) {
+  font-size: 10px !important;
+}
+
+:is([class^="training-"], [class*=" training-"]) :is(button, label),
+:is([class^="development-"], [class*=" development-"]) :is(button, label) {
+  font-size: 10px !important;
+}
+
+:is([class^="training-"], [class*=" training-"]) strong,
+:is([class^="development-"], [class*=" development-"]) strong {
+  font-size: 11px !important;
+}
+
+/* 表格、流程和卡片中没有包裹标签的正文。 */
+.training-assessment-head,
+.training-assessment-board > article,
+.report-table > div,
+.development-report-head,
+.development-report-table > article,
+.development-flow i {
+  font-size: 10px !important;
+}
+
+/* 保留数据指标原有的视觉层级。 */
+.training-command-strip article > strong,
+.report-summary-row strong,
+.effect-ring strong {
+  font-size: 17px !important;
+}
+
+.cohort-score strong {
+  font-size: 27px !important;
+}
+
+.development-kpis strong {
+  font-size: 20px !important;
+}
+
+.development-report-insight > strong {
+  font-size: 17px !important;
+}

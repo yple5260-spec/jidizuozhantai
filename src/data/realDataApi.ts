@@ -7,7 +7,7 @@ export type LiveMember={
  jobNo:string;name:string;team:string;leaderCode:string;supervisor:string;stage:string
  metrics:{responses:LiveMetric;cph:LiveMetric;satisfaction:LiveMetric;fcr:LiveMetric;busyRest:LiveMetric;repeatCall:LiveMetric}
  productivityDrivers:{
-  formula:string;workHours:LiveMetric;utilization:LiveMetric;handleTime:LiveMetric;busyRest:LiveMetric
+  formula:string;workHours:LiveMetric;utilization:LiveMetric;talkTime:LiveMetric;afterCall:LiveMetric;handleTime:LiveMetric;busyRest:LiveMetric
   talkSeconds:number|null;totalWorkSeconds:number|null;calculatedActualResponses:number|null;calculatedTargetResponses:number|null
   sourceImpacts:{workHours:number|null;utilization:number|null;talkTime:number|null;afterCall:number|null;busyRest:number|null}
  }
@@ -20,8 +20,8 @@ export type LiveSalaryPerson={
  businessReward:number|null;subsidies:number|null;rewards:number|null;grossSalary:number|null;netSalary:number|null;laborCost:number|null
 }
 export type RealDataState={
- meta:{mode:'real';sourceSchema:string;scopeLabel:string;warning:string;refreshedAt:string;dates:Record<string,string>}
- team:{members:LiveMember[];groups:{team:string;total:number;met:number;attention:number;potential:number;focus:number}[];marketing:{broadband:{period:string;result:number;rowsCount:number};package:{period:string;result:number;rowsCount:number}}}
+ meta:{mode:'real';sourceSchema:string;scopeLabel:string;warning:string;refreshedAt:string;dates:Record<string,string>;contractVersion:string;metricCatalogVersion:string;quality:{completeRows:number;totalRows:number};scope:{role:string;roleLabel:string;profile:{jobNo:string;name:string;roleName:string;project:string;department:string;orgPath:string;team:string}|null;sourceRule:string;directory:{version:number;source:string;importedAt:string;memberCount:number};totalRows:number;visibleRows:number;directoryMatchedRows:number;unmatchedRows:number;strict:boolean}}
+ team:{members:LiveMember[];groups:{team:string;total:number;met:number;attention:number;potential:number;focus:number}[];marketing:{broadband:{period:string;result:number;rowsCount:number};package:{period:string;result:number;rowsCount:number}};taskStatusByEmployee:Record<string,{id:string;title:string;status:string;ownerRole:string;updatedAt:string;metricCodes:string[]}>}
  employee:{matched:boolean;profile:LiveMember;salary:LiveSalaryPerson|null;requestedJobNo:string}|null
  morning:{date:string;praise:LiveMember[];focus:LiveMember[];metrics:LiveMetric[];marketing:RealDataState['team']['marketing']}
  attendance:{dataDate:string;summary:{employeeCount:number;scheduled:number;fullWork:number;late:number;absent:number};people:{jobNo:string;name:string;team:string;leader:string;stage:string;schedule:string;attendanceStatus:string;fullWork:string;late:string;absent:string;signHours:number|null;dataDate:string}[]}

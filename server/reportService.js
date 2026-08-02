@@ -2,9 +2,11 @@ import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
 
+const rpaSeed=JSON.parse(fs.readFileSync(new URL('./seeds/10015-rpa-report-data.json',import.meta.url),'utf8'))
+
 export const projects=[
  {id:'hebei-return-10010',name:'河北回流10010',shortName:'10010',status:'template_ready',statusLabel:'模板就绪 · 待接数据',runnable:false,description:'已预置报表字段和运行接口，等待配置10010数据适配器。'},
- {id:'north-center-10015',name:'北方中心10015',shortName:'10015升投',status:'live_database',statusLabel:'真实库已接入',runnable:true,description:'直连 ai_hack_s2 事实表；当前为上海/云南测试数据范围。'},
+ {id:'north-center-10015',name:'北方中心10015',shortName:'10015升投',status:'attachment_snapshot',statusLabel:'附件数据已接入',runnable:true,description:'使用《15升投运营日报-0720.xlsx》核验快照，覆盖人员运营、质量和人员流失。'},
  {id:'unicom-online-400',name:'联通在线400',shortName:'400',status:'template_ready',statusLabel:'模板就绪 · 待接数据',runnable:false,description:'已预置报表字段和运行接口，等待配置400项目数据适配器。'},
 ]
 
@@ -14,6 +16,16 @@ export const reportDefinitions=[
  {id:'personal-weekly-performance',name:'个人绩效周报',schedule:'每周一 08:00',description:'个人产量、参评、满意、申诉拦截和KPI绩效。'},
  {id:'monthly-operations-analysis',name:'月度经营分析',schedule:'每月1日 10:00',description:'目标、达成、预测、差异和经营管理建议。'},
 ]
+
+const specialistReportDefinitions={
+ quality:{id:'quality-daily',name:'质检日报',schedule:'每日 09:00',description:'责任认定、质量扣款、问题录音和整改任务的质量快照。'},
+ training:{id:'attrition-training-daily',name:'人员流失培训日报',schedule:'每日 09:10',description:'按人员阶段和流失原因识别培训、带教与适岗改善需求。'},
+ hrbp:{id:'attrition-hrbp-daily',name:'人员流失与保留日报',schedule:'每日 09:10',description:'按项目、团队、人员阶段和原因跟踪流失及组织保留动作。'},
+}
+
+const scopedManagementReports=reportDefinitions.map(item=>item.id==='team-morning-brief'?{
+ ...item,name:'人员运营日报',description:'员工产能、效率、质量、差距和追回计划；按当前岗位自动控制人员范围。'
+}:item)
 
 const operationWarning='源工作簿含大量现代公式及既有缓存错误；平台只使用已核验缓存快照，运行时不打开或重算284MB工作簿。'
 const sourceProfiles={
@@ -148,19 +160,128 @@ const templateColumns={
  'operations-daily':['指标分类','指标','目标值','实际值','达成或预测','单位','来源工作表','数据状态'],
  'personal-weekly-performance':['员工','统计周期','业务量','参评率','满意率','KPI绩效','来源工作表','数据状态'],
  'monthly-operations-analysis':['统计月份','经营维度','指标','目标或预算','当前或预测','差异','单位','来源','数据状态'],
+ 'quality-daily':['听音日期','责任等级','员工','工号','班组','队列','省分','扣款','接触记录','质检点评'],
+ 'attrition-training-daily':['离职日期','员工','工号','部门','班组','人员阶段','入职日期','流失原因','主管','经理'],
+ 'attrition-hrbp-daily':['离职日期','员工','工号','部门','班组','人员阶段','入职日期','流失原因','主管','经理'],
+}
+
+const roleReportDefinitions=role=>{
+ if(role==='quality')return [specialistReportDefinitions.quality]
+ if(role==='training')return [specialistReportDefinitions.training]
+ if(role==='hrbp')return [specialistReportDefinitions.hrbp]
+ if(['leader','supervisor','manager','director'].includes(role))return scopedManagementReports
+ return reportDefinitions
+}
+const reportByRole=(id,role)=>roleReportDefinitions(role).find(item=>item.id===id)||reportDefinitions.find(item=>item.id===id)
+const pct=value=>value==null||!Number.isFinite(Number(value))?'—':`${(Number(value)*100).toFixed(1)}%`
+const numberText=value=>value==null||!Number.isFinite(Number(value))?'—':Number(value).toLocaleString('zh-CN',{maximumFractionDigits:1})
+const excelDateText=value=>{
+ if(typeof value!=='number'||!Number.isFinite(value))return String(value||'—')
+ return new Date(Math.round((value-25569)*86400)*1000).toISOString().slice(0,10)
+}
+const average=(rows,key)=>rows.length?rows.reduce((sum,item)=>sum+Number(item[key]||0),0)/rows.length:0
+const roleScope=(role,actor)=>{
+ const leaders=Object.keys(rpaSeed.aggregates.leaders).filter(name=>name!=='李娜')
+ if(role==='leader'){
+  const leader=leaders.includes(actor)?actor:leaders.sort((a,b)=>rpaSeed.aggregates.leaders[b]-rpaSeed.aggregates.leaders[a])[0]
+  return {label:`${leader}班组`,policy:'仅展示当前班长负责班组人员',leaders:[leader]}
+ }
+ if(role==='supervisor')return {label:'前台一组',policy:'展示当前主管团队下代永乐、李成雨、李慧、王璐璐四个班组',leaders:['代永乐','李成雨','李慧','王璐璐']}
+ if(role==='manager')return {label:'10015升投项目',policy:'展示经理负责项目的全部员工',leaders}
+ return {label:'河北基地全域',policy:'展示基地已接入项目数据；当前附件覆盖10015升投',leaders}
+}
+const employeeStatus=item=>item.attainment==null?'目标待配':item.attainment>=1&&item.satisfactionActual>=item.satisfactionTarget?'达标标杆':item.attainment<.9?'重点追回':'质量关注'
+const employeeTask=item=>({
+ title:`${item.name} · ${item.attainment==null?'阶段目标配置':'产能与质量改善'}`,targetRole:'leader',owner:`${item.leader}（班长）`,issueCategory:'人员经营改善',issueLocation:`10015升投 / ${item.leader}班组 / ${item.name} ${item.jobNo}`,
+ problem:item.attainment==null?`${item.name}已有月截止产能${numberText(item.monthlyActual)}，但附件未配置实操期月度产能目标，当前不能进行达标判断。`:`${item.name}月截止产能${numberText(item.monthlyActual)}，目标${numberText(item.monthlyTarget)}，达成率${pct(item.attainment)}；满意率${pct(item.satisfactionActual)}，需围绕签入、ATT、置忙与服务动作定位差距。`,
+ target:item.attainment==null?'完成阶段目标配置并形成可执行的当班跟踪口径':`月截止产能追回至${numberText(item.monthlyTarget)}，并保持满意率不低于${pct(item.satisfactionTarget)}`,
+ successCriteria:item.attainment==null?'阶段目标、适用周期和责任人配置完成，主管复核通过，后续日报可计算达成率。':`系统复核产能达成率不低于100%，满意率不低于${pct(item.satisfactionTarget)}，同时提交辅导记录和过程证据。`,
+ actionPlan:`按签入影响${numberText(item.signinImpact)}、ATT影响${numberText(item.attImpact)}、置忙影响${numberText(item.busyImpact)}拆解当班动作，每日复盘实际产能和满意度。`,
+ metricCode:item.attainment==null?'target_configuration':'responses',metricLabel:item.attainment==null?'阶段目标配置完成率':'月截止产能',metricUnit:item.attainment==null?'%':'通',metricDirection:'higher',baselineValue:item.attainment==null?0:Number(item.monthlyActual||0),targetValue:item.attainment==null?100:Number(item.monthlyTarget||0),
+ employeeCode:item.jobNo,employeeName:item.name,team:`${item.leader}班组`,aiRationale:'依据附件“员工达成”表中的产能GAP及归因字段生成。',
+})
+const buildPeoplePreview=(project,report,role,actor)=>{
+ const scope=roleScope(role,actor)
+ const people=rpaSeed.employees.filter(item=>scope.leaders.includes(item.leader)).map(item=>{
+  const monthlyTarget=Number(item.monthlyTarget)>0?Number(item.monthlyTarget):null
+  const satisfactionRaw=Number(item.satisfactionTarget),satisfactionTarget=satisfactionRaw>0&&satisfactionRaw<=1?satisfactionRaw:satisfactionRaw>1?satisfactionRaw-Math.floor(satisfactionRaw):.88
+  const normalizedSatisfaction=satisfactionTarget>=.5&&satisfactionTarget<=1?satisfactionTarget:.88
+  return {...item,monthlyTarget,attainment:monthlyTarget?Number(item.monthlyActual)/monthlyTarget:null,productionGap:monthlyTarget?Number(item.monthlyActual)-monthlyTarget:null,satisfactionTarget:normalizedSatisfaction,recoveryAttainment:monthlyTarget&&Number(item.recoveryActual)?Number(item.recoveryActual)/monthlyTarget:null}
+ }).sort((a,b)=>(a.attainment??Infinity)-(b.attainment??Infinity))
+ const met=people.filter(item=>employeeStatus(item)==='达标标杆').length
+ const recover=people.filter(item=>employeeStatus(item)==='重点追回').length
+ const quality=people.filter(item=>employeeStatus(item)==='质量关注').length
+ const pendingTarget=people.filter(item=>employeeStatus(item)==='目标待配').length
+ const peopleRows=people.map(item=>({...item,status:employeeStatus(item),team:`${item.leader}班组`,task:employeeTask(item)}))
+ const columns=['状态','员工','工号','班组','阶段','月截止目标','月截止达成','达成率','产能GAP','ATT','利用率','置忙小休','满意率','追回后达成率']
+ const rows=peopleRows.map(item=>[item.status,item.name,item.jobNo,item.team,item.stage,numberText(item.monthlyTarget),numberText(item.monthlyActual),pct(item.attainment),numberText(item.productionGap),`${numberText(item.att)}s`,pct(item.utilization),pct(item.busyRest),pct(item.satisfactionActual),pct(item.recoveryAttainment)])
+ return {project,report,available:true,source:{...sourceProfiles.operations,sheets:['员工达成','考核指标','10015升投'],mode:'attachment_snapshot',modeLabel:'附件数据快照',warnings:[operationWarning,scope.policy]},summary:[
+  {label:'可见员工',value:`${people.length}人`,detail:scope.label,status:'normal'},
+  {label:'达标标杆',value:`${met}人`,detail:`占可见范围${people.length?pct(met/people.length):'0%'}`,status:'good'},
+  {label:'重点追回',value:`${recover}人`,detail:'产能达成率低于90%',status:'risk'},
+  {label:'平均满意率',value:pct(average(people,'satisfactionActual')),detail:`质量关注${quality}人 · 目标待配${pendingTarget}人`,status:average(people,'satisfactionActual')>=.88?'good':'risk'},
+ ],columns,rows,roleView:{kind:'people',scopeLabel:scope.label,scopePolicy:scope.policy,peopleRows}}
+}
+const qualityTask=item=>({
+ title:`${item.name} · ${item.responsibility}质量整改`,targetRole:'leader',owner:`${item.team}（班长）`,issueCategory:'质量整改',issueLocation:`10015升投 / ${item.team}班组 / ${item.name} ${item.jobNo}`,
+ problem:`${item.responsibility}：${item.comment||'质检发现服务规范问题'}；责任扣款${numberText(item.deduction)}元，接触记录${item.contactId||'待补充'}。`,
+ target:'完成问题复盘、规范校准与二次抽检，整改合格率达到100%',successCriteria:'提交录音或接触记录、辅导记录和复检结果；同类问题复检样本全部合格。',
+ actionPlan:'班长在24小时内完成当事员工复盘，质检抽取同类新样本复检，并回填问题原因、改进动作和验证结论。',
+ metricCode:'quality_remediation',metricLabel:'质量整改完成率',metricUnit:'%',metricDirection:'higher',baselineValue:0,targetValue:100,employeeCode:item.jobNo,employeeName:item.name,team:item.team,aiRationale:'依据附件“质检”表责任认定、扣款及评分标准点评生成。',
+})
+const buildQualityPreview=(project,report)=>{
+ const records=rpaSeed.quality.map(item=>({...item,listenDate:excelDateText(item.listenDate),task:qualityTask(item)}))
+ const serious=records.filter(item=>['红线','底线'].includes(item.responsibility)).length
+ const deduction=records.reduce((sum,item)=>sum+Number(item.deduction||0),0)
+ const teams=new Set(records.map(item=>item.team)).size
+ const columns=['听音日期','责任等级','员工','工号','班组','队列','省分','扣款','接触记录','质检点评']
+ const rows=records.map(item=>[String(item.listenDate||''),item.responsibility,item.name,item.jobNo,item.team,item.queue,item.province,numberText(item.deduction),String(item.contactId||''),String(item.comment||'')])
+ return {project,report,available:true,source:{...sourceProfiles.operations,sheets:['质检','考核指标'],mode:'attachment_snapshot',modeLabel:'附件数据快照',warnings:[operationWarning,'质量数据按质检岗位全量可见，任务默认派发至责任班长并由质检验收。']},summary:[
+  {label:'质检问题',value:`${records.length}条`,detail:'附件已认定记录',status:'normal'},
+  {label:'红线/底线',value:`${serious}条`,detail:'优先整改与复检',status:serious?'risk':'good'},
+  {label:'责任扣款',value:`${numberText(deduction)}元`,detail:'降免后责任口径',status:deduction?'risk':'good'},
+  {label:'涉及班组',value:`${teams}个`,detail:'支持按班组下发PDCA',status:'normal'},
+ ],columns,rows,roleView:{kind:'quality',scopeLabel:'10015升投 · 质检全量',scopePolicy:'质检岗位查看全部质量问题与责任记录',qualityRows:records}}
+}
+const attritionTask=(item,role)=>({
+ title:`${item.reason} · ${item.team}留存改善`,targetRole:'supervisor',owner:`${item.supervisor||'责任主管'}（主管）`,issueCategory:role==='training'?'流失原因培训改善':'人员保留改善',issueLocation:`${item.department} / ${item.team} / ${item.stage}`,
+ problem:`${item.name}于${item.leaveDate}离职，人员阶段为${item.stage}，流失原因为“${item.reason}”。需复盘同团队同阶段人员的共性风险。`,
+ target:role==='training'?'同阶段人员专项培训与面谈覆盖率达到100%':'同团队高风险人员保留面谈覆盖率达到100%',successCriteria:'完成目标人群清单、逐人访谈或训练记录，并在验证节点提交覆盖率与风险变化证据。',
+ actionPlan:role==='training'?'按流失原因设计专项微课和带教动作，联动班长完成同阶段人员训练与效果回访。':'筛选同团队同阶段风险人员，完成原因访谈、保留方案和责任人时限，并复盘落地结果。',
+ metricCode:role==='training'?'training_coverage':'retention_interview_coverage',metricLabel:role==='training'?'专项培训覆盖率':'保留面谈覆盖率',metricUnit:'%',metricDirection:'higher',baselineValue:0,targetValue:100,employeeCode:item.jobNo,employeeName:item.name,team:item.team,aiRationale:'依据附件“4月流失”表中的阶段、流失原因与管理归属生成。',
+})
+const buildAttritionPreview=(project,report,role)=>{
+ const records=rpaSeed.attrition.map(item=>({...item,task:attritionTask(item,role)}))
+ const reasons=Object.entries(rpaSeed.aggregates.attritionReasons).sort((a,b)=>b[1]-a[1])
+ const early=records.filter(item=>String(item.stage).includes('实习')||String(item.stage).includes('实操')).length
+ const managerScope=role==='hrbp'?'河北基地组织全域':'河北基地培训分析全域'
+ const columns=['离职日期','员工','工号','部门','班组','人员阶段','入职日期','流失原因','主管','经理']
+ const rows=records.map(item=>[item.leaveDate,item.name,item.jobNo,item.department,item.team,item.stage,item.hireDate,item.reason,item.supervisor,item.manager])
+ return {project,report,available:true,source:{...sourceProfiles.operations,sheets:['4月流失','5月流失','前台人员信息'],mode:'attachment_snapshot',modeLabel:'附件数据快照',warnings:[operationWarning,'5月流失表未形成有效离职记录，本期统计采用4月已填写离职日期与原因的记录。']},summary:[
+  {label:'本期流失',value:`${records.length}人`,detail:'4月有效离职记录',status:'risk'},
+  {label:'实习/实操流失',value:`${early}人`,detail:'重点关注适岗与带教',status:early?'risk':'good'},
+  {label:'TOP原因',value:String(reasons[0]?.[0]||'暂无'),detail:`${reasons[0]?.[1]||0}人`,status:'risk'},
+  {label:'原因完整率',value:pct(records.filter(item=>item.reason).length/(records.length||1)),detail:'支持归因与专项改善',status:'good'},
+ ],columns,rows,roleView:{kind:'attrition',scopeLabel:managerScope,scopePolicy:role==='training'?'聚焦阶段、原因及对应培训改善':'聚焦团队、原因及人员保留动作',attritionRows:records}}
 }
 
 const findProject=id=>projects.find(item=>item.id===id)
 const findReport=id=>reportDefinitions.find(item=>item.id===id)
 
-export function catalog(){return {projects,reports:reportDefinitions}}
+export function catalog(role){return {projects,reports:role?roleReportDefinitions(role):reportDefinitions}}
 
-export function buildPreview(projectId,reportType){
+export function buildPreview(projectId,reportType,context={}){
  const project=findProject(projectId)
- const report=findReport(reportType)
+ const report=context.role?reportByRole(reportType,context.role):findReport(reportType)
  if(!project)throw Object.assign(new Error('未知项目'),{status:400,code:'REPORT_PROJECT_UNKNOWN'})
  if(!report)throw Object.assign(new Error('未知报表类型'),{status:400,code:'REPORT_TYPE_UNKNOWN'})
  if(!project.runnable)return {project,report,available:false,source:null,summary:[],columns:templateColumns[reportType],rows:[],integrationMessage:'数据接入待配置。当前仅提供报表模板和字段架构，不生成或伪装真实项目报表。'}
+ if(context.role){
+  if(reportType==='quality-daily'&&context.role==='quality')return buildQualityPreview(project,report)
+  if(reportType==='attrition-training-daily'&&context.role==='training')return buildAttritionPreview(project,report,'training')
+  if(reportType==='attrition-hrbp-daily'&&context.role==='hrbp')return buildAttritionPreview(project,report,'hrbp')
+  if(reportType==='team-morning-brief'&&['leader','supervisor','manager','director'].includes(context.role))return buildPeoplePreview(project,report,context.role,context.actor||'')
+ }
  return {project,report,available:true,...previews[reportType]}
 }
 

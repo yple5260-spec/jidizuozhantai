@@ -7,6 +7,7 @@ k8s/secret.yaml
 claude 历史对话/
 dist/
 node_modules/
+work/
 *.tsbuildinfo
 server/data/generated/
 server/data/ai-config.json

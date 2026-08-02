@@ -10,13 +10,15 @@ import { getAiConfig,publicAiConfig,saveAiConfig } from './aiConfig.js'
 import { authenticate, changePassword, deleteRole, initializeAccessPersistence, loadAccess, publicAccess, requirePermission, revokeSessions, saveRole, saveUser, userAction } from './accessStore.js'
 import { createSession, destroySession, publicSession, requireReadySession, requireSession, sessionPayload } from './auth.js'
 import { databaseClose,databaseConfigured,databaseHealth,databaseTarget } from './database.js'
-import { buildLiveReportPreview,getRealData,getTaskMetricTrend } from './realDataRepository.js'
+import { buildLiveReportPreview,getRealData,getScopedTeamMember,getTaskMetricTrend } from './realDataRepository.js'
 import { migrateBusinessSchema } from './migrate.js'
 import { initializeStatePersistence,loadState,resetState,saveSnapshotOnlyState,saveState,saveTaskActionState,statePersistenceMode } from './statePersistence.js'
 import { aiHistory,appendAiExchange,applyRuntimeRetention,claimScheduledBatch,clearAiHistory,deleteTaskAttachment,finishScheduledBatch,loadTaskAttachment,markNotificationRead,notificationReadIds,saveTaskAttachment } from './runtimeRepository.js'
 import { completeTaskNode,improvementSummary,normalizeLeanTask,systemTargetSuggestion } from './leanPdca.js'
-import { startTaskOutboxWorker,stopTaskOutboxWorker } from './taskOutbox.js'
+import { actionAllowed,applyTaskSlaSweep,experienceCandidateFromTask,pdcaBusinessMetrics,verificationGate } from './pdcaEngine.js'
+import { startTaskOutboxWorker,stopTaskOutboxWorker,taskOutboxHealth } from './taskOutbox.js'
 import { API_VERSION } from './version.js'
+import { answeredCallsShapley } from './shapleyAttribution.js'
 
 const PORT=process.env.API_PORT||process.env.PORT||4174
 const CORS_ORIGIN=String(process.env.CORS_ORIGIN||'').trim()
@@ -35,7 +37,7 @@ const body=async req=>{
  let b='',size=0
  for await(const c of req){
   size+=c.length
-  if(size>8*1024*1024)throw Object.assign(new Error('请求内容不能超过8MB'),{status:413,code:'REQUEST_TOO_LARGE'})
+  if(size>36*1024*1024)throw Object.assign(new Error('请求内容不能超过36MB'),{status:413,code:'REQUEST_TOO_LARGE'})
   b+=c
  }
  if(!b)return {}
@@ -58,6 +60,7 @@ const requireRuntimeRole=(req,requestedRole,allowedRoles=Object.keys(roles))=>{
  return {current,role,actor:current.user.name}
 }
 const taskVisibleToRole=(task,role)=>{
+ if(task.voidedAt)return role==='director'||role==='manager'
  if(role==='director')return true
  if(role==='manager')return true
  const related=task.ownerRole===role||task.originRole===role||task.initiatorRole===role||task.executionOwnerRole===role||task.verificationRole===role
@@ -264,10 +267,18 @@ const taskActionJson=(res,status,state,current,taskId,newNoticeIds)=>{
   tasks:task?[task]:[],
   event:event||null,
   events:event?[event]:[],
-  notifications,
+  notifications,excellence:visible.excellence,
  })
 }
 const safeText=(value,max=500)=>String(value||'').trim().slice(0,max)
+const taskExperienceMatches=(state,input)=>{
+ const query=[input.problem,input.issueCategory,input.issueLocation,input.metricCode].filter(Boolean).join(' ').toLowerCase()
+ return (state.excellence?.experiences||[]).filter(item=>item.aiPublished).map(item=>{
+  const hits=(item.keywords||[]).filter(keyword=>query.includes(String(keyword).toLowerCase()))
+  const categoryHit=query.includes(String(item.category||'').toLowerCase())
+  return {...item,matchScore:Math.min(99,52+hits.length*12+(categoryHit?10:0)),matchedKeywords:hits}
+ }).filter(item=>item.matchedKeywords.length||query.includes(String(item.category||'').toLowerCase())).sort((a,b)=>b.matchScore-a.matchScore).slice(0,3)
+}
 const cleanChatMessages=messages=>{
  if(!Array.isArray(messages))return []
  return messages.slice(-16).map(message=>({
@@ -358,50 +369,56 @@ const finiteNumber=value=>{
  return Number.isFinite(parsed)?parsed:null
 }
 const attributionRound=(value,digits=2)=>value==null?null:Number(value.toFixed(digits))
-const productivityByFormula=(hours,utilization,handleTime)=>hours!=null&&utilization!=null&&handleTime>0
- ?hours*3600*(utilization/100)/handleTime:null
 const buildProductivityAttribution=input=>{
  const responseActual=finiteNumber(input?.responses?.actual),responseTarget=finiteNumber(input?.responses?.target)
  const workActual=finiteNumber(input?.workHours?.actual),workTarget=finiteNumber(input?.workHours?.target)
  const utilizationActual=finiteNumber(input?.utilization?.actual),utilizationTarget=finiteNumber(input?.utilization?.target)
- const handleActual=finiteNumber(input?.handleTime?.actual),handleTarget=finiteNumber(input?.handleTime?.target)
- const busyActual=finiteNumber(input?.busyRest?.actual),busyTarget=finiteNumber(input?.busyRest?.target)
- const targetFormula=productivityByFormula(workTarget,utilizationTarget,handleTarget)
- const afterWork=productivityByFormula(workActual,utilizationTarget,handleTarget)
- const afterUtilization=productivityByFormula(workActual,utilizationActual,handleTarget)
- const actualFormula=productivityByFormula(workActual,utilizationActual,handleActual)
- const sourceImpacts=input?.sourceImpacts||{}
- const handleSourceImpacts=[finiteNumber(sourceImpacts.talkTime),finiteNumber(sourceImpacts.afterCall)].filter(value=>value!=null)
+ const legacyHandleActual=finiteNumber(input?.handleTime?.actual),legacyHandleTarget=finiteNumber(input?.handleTime?.target)
+ const explicitTalkActual=finiteNumber(input?.talkTime?.actual),explicitTalkTarget=finiteNumber(input?.talkTime?.target)
+ const explicitAfterCallActual=finiteNumber(input?.afterCall?.actual),explicitAfterCallTarget=finiteNumber(input?.afterCall?.target)
+ const talkActual=explicitTalkActual??legacyHandleActual,talkTarget=explicitTalkTarget??legacyHandleTarget
+ const afterCallActual=explicitAfterCallActual??(explicitTalkActual==null&&legacyHandleActual!=null?0:null)
+ const afterCallTarget=explicitAfterCallTarget??(explicitTalkTarget==null&&legacyHandleTarget!=null?0:null)
+ const attribution=answeredCallsShapley([
+  {code:'work_hours',label:'出勤时长',actual:workActual,baseline:workTarget,unit:'h',direction:'higher'},
+  {code:'utilization',label:'通话可利用率',actual:utilizationActual,baseline:utilizationTarget,unit:'%',direction:'higher'},
+  {code:'att',label:'ATT',actual:talkActual,baseline:talkTarget,unit:'s',direction:'lower'},
+  {code:'acw',label:'ACW',actual:afterCallActual,baseline:afterCallTarget,unit:'s',direction:'lower'},
+ ])
+ const contributionByCode=Object.fromEntries(attribution.contributions.map(item=>[item.code,item]))
  const drivers=[
-  {code:'work_hours',label:'签入工时',actual:workActual,target:workTarget,unit:'h',direction:'higher',impactCalls:targetFormula!=null&&afterWork!=null?afterWork-targetFormula:finiteNumber(sourceImpacts.workHours),evidence:'实际签入工时与个人目标工时的差值'},
-  {code:'utilization',label:'员工利用率',actual:utilizationActual,target:utilizationTarget,unit:'%',direction:'higher',impactCalls:afterWork!=null&&afterUtilization!=null?afterUtilization-afterWork:finiteNumber(sourceImpacts.utilization),evidence:'通话总时长 ÷ 总工作时长'},
-  {code:'handle_time',label:'通话均长',actual:handleActual,target:handleTarget,unit:'s',direction:'lower',impactCalls:afterUtilization!=null&&actualFormula!=null?actualFormula-afterUtilization:handleSourceImpacts.length?handleSourceImpacts.reduce((sum,value)=>sum+value,0):null,evidence:'AHT包含通话与话后整理对产能的共同影响'},
-  {code:'busy_rest',label:'示忙小休率',actual:busyActual,target:busyTarget,unit:'%',direction:'lower',impactCalls:finiteNumber(sourceImpacts.busyRest),evidence:'作为利用率损失的过程原因单独展示，不与利用率影响重复汇总'},
+  {code:'work_hours',label:'出勤时长',actual:workActual,target:workTarget,unit:'h',direction:'higher',evidence:'实际出勤时长相对目标变化对接听量的平均边际贡献'},
+  {code:'utilization',label:'通话可利用率',actual:utilizationActual,target:utilizationTarget,unit:'%',direction:'higher',evidence:'可用于接听的时长占出勤时长比例对接听量的平均边际贡献'},
+  {code:'att',label:'ATT',actual:talkActual,target:talkTarget,unit:'s',direction:'lower',evidence:'平均通话时长变化对接听量的平均边际贡献'},
+  {code:'acw',label:'ACW',actual:afterCallActual,target:afterCallTarget,unit:'s',direction:'lower',evidence:'平均话后整理时长变化对接听量的平均边际贡献'},
  ].map(driver=>{
   const comparable=driver.actual!=null&&driver.target!=null
   const gap=comparable?driver.actual-driver.target:null
   const adverse=comparable&&(driver.direction==='lower'?driver.actual>driver.target:driver.actual<driver.target)
-  return {...driver,gap:attributionRound(gap),impactCalls:attributionRound(driver.impactCalls),status:!comparable?'unknown':adverse?'risk':'met'}
+  const contribution=contributionByCode[driver.code]
+  return {...driver,gap:attributionRound(gap),impactCalls:attributionRound(contribution?.impact),contributionRate:attributionRound((contribution?.contributionRate??0)*100,1),status:!comparable?'unknown':adverse?'risk':'met'}
  })
  const ranked=drivers.filter(driver=>driver.status==='risk').sort((left,right)=>(left.impactCalls??0)-(right.impactCalls??0))
  const primary=ranked[0]
- const formulaGap=targetFormula!=null&&actualFormula!=null?actualFormula-targetFormula:null
+ const targetFormula=attribution.baselineValue,actualFormula=attribution.actualValue,formulaGap=attribution.totalImpact
  const responseGap=responseActual!=null&&responseTarget!=null?responseActual-responseTarget:null
+ const unexplainedGap=responseGap!=null&&formulaGap!=null?responseGap-formulaGap:null
  const recommendations=ranked.slice(0,3).map(driver=>driver.code==='work_hours'
-  ?`补齐签入工时至${driver.target}${driver.unit}，逐小时检查迟签、早退和离席时段。`
+  ?`补齐出勤时长至${driver.target}${driver.unit}，逐小时检查迟签、早退和离席时段。`
   :driver.code==='utilization'
-   ?`将员工利用率提升至${driver.target}${driver.unit}，重点压降等待、示忙和非必要离席。`
-   :driver.code==='handle_time'
-    ?`将通话均长控制至${driver.target}${driver.unit}以内，拆分通话与话后整理定位超长环节。`
-    :`将示忙小休率压降至${driver.target}${driver.unit}以内，核对高峰时段小休和示忙原因。`)
+   ?`将通话可利用率提升至${driver.target}${driver.unit}，重点压降等待、示忙和非必要离席。`
+   :driver.code==='att'
+    ?`将ATT控制至${driver.target}${driver.unit}以内，复盘超长通话的话术和业务处理环节。`
+    :`将ACW控制至${driver.target}${driver.unit}以内，压缩非必要话后整理并沉淀快捷模板。`)
  return {
   employee:{jobNo:safeText(input?.jobNo,40),name:safeText(input?.name,40),team:safeText(input?.team,100)},
-  formula:'目标产能 = 目标工时 × 3600 × 目标员工利用率 ÷ 目标通话均长',
-  utilizationFormula:'员工利用率 = 通话总时长 ÷ 总工作时长',
-  calculation:{responseActual,responseTarget,responseGap:attributionRound(responseGap),formulaActual:attributionRound(actualFormula),formulaTarget:attributionRound(targetFormula),formulaGap:attributionRound(formulaGap)},
+  method:'shapley',engine:'shapley-attribution-v1',
+  formula:'接听量 = 出勤时长 × 通话可利用率 × 3600 ÷（ATT + ACW）',
+  utilizationFormula:'通话可利用率 = 可用于接听的时长 ÷ 出勤时长',
+  calculation:{responseActual,responseTarget,responseGap:attributionRound(responseGap),formulaActual:attributionRound(actualFormula),formulaTarget:attributionRound(targetFormula),formulaGap:attributionRound(formulaGap),unexplainedGap:attributionRound(unexplainedGap),reconciliationGap:attributionRound(attribution.reconciliationGap,8)},
   drivers,
-  conclusion:responseGap==null?'当前应答量或目标值不完整，先补齐口径后再确认产能Gap。':responseGap>=0?'当前产能已达到个人目标，建议继续观察过程指标稳定性。':primary?`产能Gap ${Math.abs(attributionRound(responseGap)||0)}通，首要负向因素为${primary.label}，其实际${primary.actual}${primary.unit}、目标${primary.target}${primary.unit}。`:`产能Gap ${Math.abs(attributionRound(responseGap)||0)}通，但现有底层驱动数据未识别出单一负向因素，需核对排队量、业务结构和数据口径。`,
-  recommendations:recommendations.length?recommendations:['核对应答量、工时、利用率和通话均长的数据口径后，再形成改善动作。'],
+  conclusion:responseGap==null?'当前应答量或目标值不完整，先补齐口径后再确认产能Gap。':responseGap>=0?'当前产能已达到个人目标，建议继续观察过程指标稳定性。':primary?`产能Gap ${Math.abs(attributionRound(responseGap)||0)}通，首要负向因素为${primary.label}，其实际${primary.actual}${primary.unit}、目标${primary.target}${primary.unit}，Shapley影响${primary.impactCalls}通。`:`产能Gap ${Math.abs(attributionRound(responseGap)||0)}通，但现有底层驱动数据未识别出单一负向因素，需核对排队量、业务结构和数据口径。`,
+  recommendations:recommendations.length?recommendations:['核对接听量、出勤时长、通话可利用率、ATT和ACW的数据口径后，再形成改善动作。'],
  }
 }
 
@@ -418,8 +435,8 @@ const server=http.createServer(async(req,res)=>{
  const url=new URL(req.url,`http://${req.headers.host}`)
  try{
   if(req.method==='GET'&&['/health','/api/health'].includes(url.pathname)){
-   const database=await databaseHealth()
-   return json(res,database.connected?200:503,{ok:database.connected,time:now(),service:'hebei-operations-api',version:API_VERSION,database})
+   const database=await databaseHealth(),outbox=database.connected?await taskOutboxHealth():{mode:'unavailable',pending:0,failed:0,deadLetter:0,oldestAgeSeconds:0}
+   return json(res,database.connected&&outbox.deadLetter===0?200:503,{ok:database.connected&&outbox.deadLetter===0,time:now(),service:'hebei-operations-api',version:API_VERSION,database,outbox})
   }
   if(req.method==='GET'&&url.pathname==='/api/ai/status'){requireReadySession(req);return json(res,200,publicAiConfig())}
   if(req.method==='GET'&&url.pathname==='/api/ai/history'){
@@ -462,21 +479,36 @@ const server=http.createServer(async(req,res)=>{
   }
   if(req.method==='POST'&&url.pathname==='/api/ai/team-attribution'){
    const current=requireReadySession(req),p=await body(req),role=authorizeRuntimeRole(current,p.role)
+   requirePermission(current.access,current.user.id,'team')
    if(!['leader','supervisor','manager','director'].includes(role))return json(res,403,{error:'当前岗位无班组归因分析权限',code:'ATTRIBUTION_FORBIDDEN'})
-   const analysis=buildProductivityAttribution(p.member)
+   const employeeCode=safeText(p.employeeCode||p.member?.jobNo,40)
+   if(!employeeCode)return json(res,400,{error:'请选择需要归因的员工',code:'ATTRIBUTION_EMPLOYEE_REQUIRED'})
+   let analysis
+   if(databaseConfigured()){
+    const scoped=await getScopedTeamMember({role,jobNo:current.user.jobNo,name:current.user.name,isSystemAdmin:current.user.roleId==='system-admin',employeeCode})
+    if(!scoped.member)return json(res,403,{error:'该员工不在当前岗位的组织数据范围内',code:'EMPLOYEE_SCOPE_FORBIDDEN'})
+    if(p.asOfDate&&p.asOfDate!==scoped.member.dataDate)return json(res,409,{error:'页面数据已更新，请刷新后重新归因',code:'ATTRIBUTION_SNAPSHOT_STALE'})
+    const live=scoped.member
+    analysis=buildProductivityAttribution({jobNo:live.jobNo,name:live.name,team:live.team,responses:live.metrics.responses,cph:live.metrics.cph,workHours:live.productivityDrivers.workHours,utilization:live.productivityDrivers.utilization,talkTime:live.productivityDrivers.talkTime,afterCall:live.productivityDrivers.afterCall,handleTime:live.productivityDrivers.handleTime,busyRest:live.productivityDrivers.busyRest,sourceImpacts:live.productivityDrivers.sourceImpacts})
+    analysis.snapshot={asOfDate:live.dataDate,contractVersion:'team-attribution.v2',scopeRule:scoped.scope.sourceRule}
+   }else{
+    if(!p.member)return json(res,503,{error:'事实数据库未配置，无法读取可信归因快照',code:'ATTRIBUTION_DATA_UNAVAILABLE'})
+    analysis=buildProductivityAttribution(p.member)
+    analysis.snapshot={asOfDate:'',contractVersion:'team-attribution.v2-offline',scopeRule:'离线演示输入'}
+   }
    const config=getAiConfig()
-   if(!config.apiKey)return json(res,200,{...analysis,provider:'system',model:'call-center-productivity-rules',aiNarrative:`${analysis.conclusion}${analysis.recommendations.join('')}`})
+   if(!config.apiKey)return json(res,200,{...analysis,provider:'system',model:analysis.engine,aiNarrative:`${analysis.conclusion}${analysis.recommendations.join('')}`})
    try{
     const result=await requestDeepSeek({
      config,maxTokens:650,
      context:{role:roles[role],scope:analysis.employee.team||'所属班组',page:'班组看数归因分析'},
-     systemPrompt:`你是呼叫中心精益运营分析师。请基于系统已经完成的产能桥接计算，输出简洁、可执行的中文归因结论。
-必须遵守：不得修改计算结果；不得虚构缺失数据；区分直接产能因子与过程因子；先讲首要原因，再讲证据、联动原因和改善动作；控制在220字以内。`,
+     systemPrompt:`你是呼叫中心精益运营分析师。请基于系统已经完成的Shapley产能归因，输出简洁、可执行的中文归因结论。
+必须遵守：不得修改Shapley计算结果；不得虚构缺失数据；先讲首要原因，再讲证据、联动原因和改善动作；控制在220字以内。`,
      messages:[{role:'user',content:JSON.stringify(analysis)}],
     })
     return json(res,200,{...analysis,provider:'DeepSeek',model:result.model,aiNarrative:result.content})
    }catch(error){
-    return json(res,200,{...analysis,provider:'system',model:'call-center-productivity-rules',warning:`大模型归因暂不可用，已使用系统规则：${error.code||'AI_UNAVAILABLE'}`,aiNarrative:`${analysis.conclusion}${analysis.recommendations.join('')}`})
+    return json(res,200,{...analysis,provider:'system',model:analysis.engine,warning:`大模型归因暂不可用，已使用Shapley引擎：${error.code||'AI_UNAVAILABLE'}`,aiNarrative:`${analysis.conclusion}${analysis.recommendations.join('')}`})
    }
   }
   if(req.method==='POST'&&url.pathname==='/api/ai/action-drafts'){
@@ -496,7 +528,7 @@ const server=http.createServer(async(req,res)=>{
    if(!draft.title||!draft.problem||!draft.target||!draft.successCriteria)return json(res,400,{error:'行动草案信息不完整',code:'AI_DRAFT_INCOMPLETE'})
    const s=load()
    const sourceKey=`ai-action:${role}:${draft.title.toLowerCase().replace(/\s+/g,'')}`
-   const duplicate=s.tasks.find(task=>task.sourceKey===sourceKey&&task.status!=='closed')
+   const duplicate=s.tasks.find(task=>task.sourceKey===sourceKey&&task.status!=='closed'&&!task.voidedAt)
    if(duplicate)return json(res,409,{error:'该AI行动已有未关闭任务，请先处理现有任务',taskId:duplicate.id})
    const today=new Date(),day=`${String(today.getMonth()+1).padStart(2,'0')}${String(today.getDate()).padStart(2,'0')}`
    const sequence=String(s.tasks.filter(task=>task.workflowKind==='ai_action'&&task.id.startsWith(`AI-${day}-`)).length+1).padStart(3,'0')
@@ -515,10 +547,11 @@ const server=http.createServer(async(req,res)=>{
    return stateJson(res,201,s,current)
   }
   if(req.method==='POST'&&url.pathname==='/api/tasks/target-suggestion'){
-   const p=await body(req),{role}=requireRuntimeRole(req,p.role,['supervisor','manager','director'])
+   const p=await body(req),{role}=requireRuntimeRole(req,p.role,Object.keys(requestTargets))
    const fallback=systemTargetSuggestion(p)
+   const experienceMatches=taskExperienceMatches(load(),p)
    const config=getAiConfig()
-   if(!config.apiKey)return json(res,200,{suggestion:fallback,provider:'system',model:'call-center-lean-rules'})
+   if(!config.apiKey)return json(res,200,{suggestion:fallback,experienceMatches,provider:'system',model:'call-center-lean-rules'})
    try{
     const result=await requestDeepSeek({
      config,maxTokens:650,
@@ -538,9 +571,9 @@ const server=http.createServer(async(req,res)=>{
     suggestion.successCriteria=safeText(parsed.successCriteria||suggestion.successCriteria,1000)
     suggestion.actionSuggestion=safeText(parsed.actionSuggestion||suggestion.actionSuggestion,1000)
     suggestion.rationale=safeText(parsed.rationale||suggestion.rationale,1000)
-    return json(res,200,{suggestion,provider:'DeepSeek',model:result.model})
+    return json(res,200,{suggestion,experienceMatches,provider:'DeepSeek',model:result.model})
    }catch(error){
-    return json(res,200,{suggestion:fallback,provider:'system',model:'call-center-lean-rules',warning:`大模型建议暂不可用，已使用系统规则：${error.code||'AI_UNAVAILABLE'}`})
+    return json(res,200,{suggestion:fallback,experienceMatches,provider:'system',model:'call-center-lean-rules',warning:`大模型建议暂不可用，已使用系统规则：${error.code||'AI_UNAVAILABLE'}`})
    }
   }
   if(req.method==='POST'&&url.pathname==='/api/auth/login'){
@@ -620,8 +653,8 @@ const server=http.createServer(async(req,res)=>{
    if(action==='publish_ai'){
     const targetMet=record.direction==='lower'?record.actual<=record.target:record.actual>=record.target
     if(!targetMet||!record.sourceTaskId||record.steps.length<2||record.evidence.length<1)return json(res,409,{error:'只有量化目标达成、关联来源任务且具备步骤与证据的经验才能发布给AI'})
-    record.aiPublished=true;record.publishedAt=now()
-   }else{record.aiPublished=false;record.publishedAt=''}
+    record.aiPublished=true;record.status='published';record.publishedAt=now()
+   }else{record.aiPublished=false;record.status='withdrawn';record.publishedAt=''}
    audit(s,actor,`${record.id}：${action==='publish_ai'?'发布至AI经验库':'从AI经验库撤回'}（${roles[role]}）`);await save(s);return stateJson(res,200,s,current)
   }
   if(req.method==='POST'&&url.pathname==='/api/excellence/recordings'){
@@ -630,17 +663,40 @@ const server=http.createServer(async(req,res)=>{
    const qualityScore=Number(p.qualityScore),targetScore=Number(p.targetScore||95),durationSeconds=Math.round(Number(p.durationSeconds))
    if(!title||!callId||!employeeName||!team||!business||notes.length<10||!Number.isFinite(qualityScore)||qualityScore<0||qualityScore>100||!Number.isFinite(durationSeconds)||durationSeconds<30)return json(res,400,{error:'请完整填写录音、员工、业务、时长、质检分和至少10字亮点说明'})
    if(qualityScore<targetScore)return json(res,409,{error:'录音质检分未达到先进录音目标线，不能入库'})
-   const id=`REC-${Date.now()}`,phraseText=safeText(p.phrase,240),phraseId=phraseText?`PHR-${Date.now()}`:''
+   const id=`REC-${Date.now()}`,phraseText=safeText(p.phrase,800),phraseId=phraseText?`PHR-${Date.now()}`:''
    const recording={id,title,callId,employeeJobNo:safeText(p.employeeJobNo,40),employeeName,team,business,durationSeconds,qualityScore,targetScore,submittedBy:actor,submittedAt:now(),aiSummary:`AI提炼：${notes}`,highlights:[notes],phraseIds:phraseId?[phraseId]:[],aiPublished:Boolean(p.aiPublished)}
    s.excellence.recordings.unshift(recording)
-   if(phraseId)s.excellence.phrases.unshift({id:phraseId,text:phraseText,scenario:business,sourceRecordingId:id,employeeName,qualityScore,tags:[business,'质检提炼'],useCount:0})
+   if(phraseId){
+    const category=/催单|催办|超时/.test(business+notes)?'催单话术':/错充|扣费|故障|未生效|问题解决/.test(business+notes)?'问题解决话术':'优秀服务话术'
+    s.excellence.phrases.unshift({id:phraseId,category,title:`${business}质检提炼话术`,text:phraseText,scenario:business,customerSignal:'来自先进录音的真实客户场景',objective:notes,steps:['确认客户真实诉求','执行可验证的解决动作','说明结果与下一反馈节点'],avoid:['空泛安抚','无依据承诺','未核实即建单'],sourceRecordingId:id,employeeName,qualityScore,tags:[business,'质检提炼'],useCount:0})
+   }
    audit(s,actor,`提交先进录音${id}，质检${qualityScore}分/目标${targetScore}分`);await save(s);return stateJson(res,201,s,current)
   }
   if(req.method==='GET'&&url.pathname==='/api/real-data'){
    const current=requireReadySession(req)
+   requirePermission(current.access,current.user.id,'team')
    const requestedRole=url.searchParams.get('role')
    const role=current.user.roleId==='system-admin'&&roles[requestedRole]?requestedRole:runtimeRoleByAccessRole[current.user.roleId]
-   return json(res,200,await getRealData({role,jobNo:current.user.jobNo,name:current.user.name}))
+   const result=await getRealData({role,jobNo:current.user.jobNo,name:current.user.name,isSystemAdmin:current.user.roleId==='system-admin'})
+   const state=load(),statusByEmployee={}
+   for(const task of state.tasks||[]){
+    if(!task.employeeId||task.voidedAt)continue
+    const currentStatus=statusByEmployee[task.employeeId]
+    if(!currentStatus||Date.parse(task.updatedAt||task.createdAt)>Date.parse(currentStatus.updatedAt||currentStatus.createdAt))statusByEmployee[task.employeeId]={id:task.id,title:task.title,status:task.status,ownerRole:task.ownerRole,updatedAt:task.updatedAt,createdAt:task.createdAt,metricCodes:(task.metricSet||[task.metric]).filter(Boolean).map(metric=>metric.code)}
+   }
+   result.team.taskStatusByEmployee=statusByEmployee
+   return json(res,200,result)
+  }
+  if(req.method==='GET'&&url.pathname==='/api/team/metric-catalog'){
+   const current=requireReadySession(req);requirePermission(current.access,current.user.id,'team')
+   return json(res,200,{version:'2026.08.01',contractVersion:'team-view.v3',metrics:[
+    {code:'responses',label:'人工应答量',unit:'通',direction:'higher',formula:'出勤时长×通话可利用率×3600÷(ATT+ACW)',owner:'运营数据'},
+    {code:'cph',label:'CPH',unit:'',direction:'higher',formula:'人工应答量÷出勤小时',owner:'运营数据'},
+    {code:'satisfaction',label:'人工服务满意率',unit:'%',direction:'higher',owner:'质检数据'},
+    {code:'fcr',label:'一次解决率',unit:'%',direction:'higher',owner:'运营数据'},
+    {code:'busy_rest',label:'置忙小休占比',unit:'%',direction:'lower',owner:'状态数据'},
+    {code:'repeat_call',label:'2小时重复来电率',unit:'%',direction:'lower',owner:'运营数据'},
+   ]})
   }
   if(req.method==='POST'&&url.pathname==='/api/reset'){
    const current=requireReadySession(req)
@@ -649,11 +705,13 @@ const server=http.createServer(async(req,res)=>{
   }
   if(req.method==='GET'&&url.pathname==='/api/reports/catalog'){
    const current=requireReadySession(req);requirePermission(current.access,current.user.id,'reports')
-   return json(res,200,catalog())
+   const requestedRole=url.searchParams.get('role'),role=requestedRole?authorizeRuntimeRole(current,requestedRole):''
+   return json(res,200,catalog(role))
   }
   if(req.method==='GET'&&url.pathname==='/api/reports/preview'){
    const current=requireReadySession(req);requirePermission(current.access,current.user.id,'reports')
-   const preview=buildPreview(url.searchParams.get('projectId'),url.searchParams.get('reportType'))
+   const requestedRole=url.searchParams.get('role'),role=requestedRole?authorizeRuntimeRole(current,requestedRole):''
+   const preview=buildPreview(url.searchParams.get('projectId'),url.searchParams.get('reportType'),role?{role,actor:current.user.name}:{})
    return json(res,200,await reportPreview(preview))
   }
   if(req.method==='GET'&&url.pathname==='/api/reports/runs'){
@@ -665,7 +723,7 @@ const server=http.createServer(async(req,res)=>{
    const p=await body(req),current=requireReadySession(req);requirePermission(current.access,current.user.id,'reports')
    const requestedRole=authorizeRuntimeRole(current,p.requestedRole)
    const s=load()
-   const preview=await reportPreview(buildPreview(p.projectId,p.reportType))
+   const preview=await reportPreview(buildPreview(p.projectId,p.reportType,{role:requestedRole,actor:current.user.name}))
    const run=createRun({dataDir,state:s,projectId:p.projectId,reportType:p.reportType,requestedBy:current.user.name,requestedRole,now,preview})
    await save(s)
    return json(res,201,run)
@@ -1423,7 +1481,7 @@ const server=http.createServer(async(req,res)=>{
    const action=safeText(p.action,40),comment=safeText(p.comment,1200)
    if(action==='manager_submit'){
     if(role!=='manager'||!['manager_draft','returned'].includes(record.status)||!comment)return json(res,409,{error:'经理必须补充偏差说明后提交'})
-    record.managerComment=comment;record.status='director_pending';record.ownerRole='director';record.owner='运营总监';record.history.push({at:now(),actor,action:`重新提交经营预测：${comment}`});addNotice(s,'director',`经营预算待决策：${record.project}`,`${record.month} · 预测毛利率${record.forecastMargin}%`,'tasks','high')
+    record.managerComment=comment;record.status='director_pending';record.ownerRole='director';record.owner='运营总监';record.history.push({at:now(),actor,action:`重新提交经营预测：${comment}`});addNotice(s,'director',`经营预算待决策：${record.project}`,`${record.month} · 预测毛利率待授权`,'tasks','high')
    }else if(action==='director_approve'){
     if(role!=='director'||record.status!=='director_pending'||!comment)return json(res,409,{error:'总监审批必须填写经营动作和控制要求'})
     record.status='active';record.ownerRole='manager';record.owner='客服经理';record.directorComment=comment;record.history.push({at:now(),actor,action:`批准预算与经营动作：${comment}`});addNotice(s,'manager',`经营预算已批准：${record.project}`,comment,'tasks','normal')
@@ -1737,7 +1795,7 @@ const server=http.createServer(async(req,res)=>{
    const requirement=String(p.requirement||'').trim()
    if(!requirement)return json(res,400,{error:'请填写需要班长执行的协同要求'})
    const sourceKey=`quality-collaboration:${String(employee.id).trim()}:${String(employee.problem).trim()}`
-   const duplicate=s.tasks.find(task=>task.sourceKey===sourceKey&&task.status!=='closed')
+   const duplicate=s.tasks.find(task=>task.sourceKey===sourceKey&&task.status!=='closed'&&!task.voidedAt)
    if(duplicate)return json(res,409,{error:`${employee.name}已有未关闭的质检协同单`,taskId:duplicate.id})
    const today=new Date()
    const day=`${String(today.getMonth()+1).padStart(2,'0')}${String(today.getDate()).padStart(2,'0')}`
@@ -1767,7 +1825,7 @@ const server=http.createServer(async(req,res)=>{
    const detail=String(p.detail||'').trim()
    if(!requester.id||!requester.name||!requester.team||!requester.leader||!supportType||!detail)return json(res,400,{error:'员工、班组、责任班长、支持类型和具体说明不能为空'})
    const sourceKey=`employee-support:${String(requester.id).trim()}:${supportType}`
-   const duplicate=s.tasks.find(task=>task.sourceKey===sourceKey&&task.status!=='closed')
+   const duplicate=s.tasks.find(task=>task.sourceKey===sourceKey&&task.status!=='closed'&&!task.voidedAt)
    if(duplicate)return json(res,409,{error:`${supportType}已有未关闭的支持请求`,taskId:duplicate.id})
    const today=new Date()
    const day=`${String(today.getMonth()+1).padStart(2,'0')}${String(today.getDate()).padStart(2,'0')}`
@@ -1840,9 +1898,17 @@ const server=http.createServer(async(req,res)=>{
   if(req.method==='POST'&&url.pathname==='/api/morning-briefings/help-task'){
    const p=await body(req),{current,role,actor}=requireRuntimeRole(req,p.role,['manager','director'])
    const s=load(),team=s.morningBriefings.teams.find(x=>x.team===p.team);if(!team)return json(res,404,{error:'班组不存在'})
-   const sourceKey=`morning-help:${team.team}:${new Date().toISOString().slice(0,10)}`,duplicate=s.tasks.find(item=>item.sourceKey===sourceKey&&item.status!=='closed')
+   const sourceKey=`morning-help:${team.team}:${new Date().toISOString().slice(0,10)}`,duplicate=s.tasks.find(item=>item.sourceKey===sourceKey&&item.status!=='closed'&&!item.voidedAt)
    if(duplicate)return json(res,409,{error:'该班组已有未关闭的班前会帮扶任务'})
-   const task={id:`TK-MB-${Date.now()}`,eventId:`MB-HELP-${Date.now()}`,title:`${team.team}班前会质量帮扶`,type:'班前会质量帮扶',ownerRole:'supervisor',owner:team.supervisor,supervisor:actor,status:'todo',phase:'P',progress:0,dueAt:new Date(Date.now()+3*24*60*60*1000).toISOString(),evidence:'',verification:'',createdAt:now(),updatedAt:now(),sourceKey,sourceLabel:'班前会质量监督',team:team.team,history:[{at:now(),actor,action:`依据召开率${team.held}/${team.planned}、平均质量${team.averageScore}分下发帮扶：${team.diagnosis}`} ]}
+   const submitDueAt=new Date(Date.now()+3*24*60*60*1000).toISOString(),verificationDueAt=new Date(Date.now()+4*24*60*60*1000).toISOString()
+   const task=normalizeLeanTask({id:`TK-MB-${Date.now()}`,eventId:`MB-HELP-${Date.now()}`,title:`${team.team}班前会质量帮扶`,type:'班前会质量帮扶',workflowKind:'lean_directive',
+    initiatorRole:role,initiatorName:actor,executionOwnerRole:'supervisor',executionOwner:team.supervisor,ownerRole:'supervisor',owner:team.supervisor,verificationRole:role,verificationOwner:actor,supervisor:actor,
+    status:'todo',phase:'P',progress:0,plannedStartAt:now(),submitDueAt,verificationDueAt,dueAt:submitDueAt,evidence:'',verification:'',createdAt:now(),updatedAt:now(),sourceKey,sourceLabel:'班前会质量监督',team:team.team,
+    problem:`${team.team}近7日召开${team.held}/${team.planned}次，平均质量${team.averageScore}分；${team.diagnosis}`,issueCategory:'班前会质量',issueLocation:team.team,
+    target:'3日内完成主管跟会、班长辅导和复评录音，班前会质量评分提升至85分以上',successCriteria:'提交跟会辅导记录和至少1份复评录音；系统复评质量评分≥85分。',actionPlan:'主管跟会定位缺项，完成班长1V1辅导，组织再次召开并提交录音复评。',
+    metric:{code:'morning_briefing_quality',label:'班前会质量评分',baseline:team.averageScore,target:85,unit:'分',direction:'higher'},evidencePolicy:{requiredAttachments:1,requiredTypes:['audio'],description:'至少提交1份复评录音及辅导记录'},
+    trigger:{type:'班前会监督',rule:'召开率或平均质量低于目标',sourceObjectId:team.team,sourceLink:'meeting',source:'班前会召开统计与录音评分',evidence:`召开${team.held}/${team.planned}次，平均${team.averageScore}分`,baselineDate:new Date().toISOString().slice(0,10),triggeredAt:now()},
+    history:[{at:now(),actor,action:`依据召开率${team.held}/${team.planned}、平均质量${team.averageScore}分下发帮扶：${team.diagnosis}`} ]})
    s.tasks.unshift(task);addNotice(s,'supervisor',`班前会帮扶任务：${team.team}`,`由${actor}下发，3日内完成跟会、辅导和录音复评。`,'tasks','high');audit(s,actor,`创建班前会帮扶任务${task.id}`);await save(s);return stateJson(res,201,s,current)
   }
   let taskAttachmentMatch=url.pathname.match(/^\/api\/tasks\/([^/]+)\/attachments(?:\/([^/]+))?$/)
@@ -1851,14 +1917,21 @@ const server=http.createServer(async(req,res)=>{
    const s=load(),task=s.tasks.find(item=>item.id===taskAttachmentMatch[1])
    if(!task)return json(res,404,{error:'任务不存在'})
    if(!taskVisibleToRole(task,role))return json(res,403,{error:'当前岗位无权访问该任务附件'})
+   if(task.voidedAt)return json(res,409,{error:'作废任务仅保留查阅，不允许新增或修改附件',code:'TASK_VOIDED_READ_ONLY'})
    const allowedRoles=new Set([task.ownerRole,task.executionOwnerRole,task.originRole,task.initiatorRole,task.verificationRole])
    if(current.user.roleId!=='system-admin'&&!allowedRoles.has(role))return json(res,403,{error:'仅任务相关岗位可以上传附件'})
    const fileName=safeText(String(p.fileName||'').replace(/[\\/\r\n]/g,'_'),255)
    const mimeType=safeText(p.mimeType||'application/octet-stream',128)
    const nodeCode=['plan','execute','submit','verify','act'].includes(p.nodeCode)?p.nodeCode:'submit'
+   if(p.referenceId){
+    const referenceId=safeText(p.referenceId,500),referenceType=safeText(p.referenceType||'recording',80)
+    if(!referenceId)return json(res,400,{error:'请输入有效的录音或业务系统引用编号'})
+    const attachment={id:`REF-${Date.now()}-${Math.random().toString(36).slice(2,6)}`,taskId:task.id,nodeCode,fileName:fileName||`${referenceType}：${referenceId}`,mimeType:'application/x-business-reference',fileSize:0,uploadedBy:actor,uploadedRole:role,createdAt:now(),isReference:true,referenceType,referenceId}
+    task.attachments=Array.isArray(task.attachments)?task.attachments:[];task.attachments.push(attachment);task.history.push({at:now(),actor,action:`在${nodeCode}节点关联${referenceType}：${referenceId}`});audit(s,actor,`为${task.id}关联业务证据${referenceId}`);await save(s);return stateJson(res,201,s,current)
+   }
    if(!fileName||typeof p.contentBase64!=='string'||!p.contentBase64)return json(res,400,{error:'请选择有效附件'})
    const content=Buffer.from(p.contentBase64,'base64')
-   if(!content.length||content.length>5*1024*1024)return json(res,413,{error:'单个附件大小需在1字节至5MB之间'})
+   if(!content.length||content.length>25*1024*1024)return json(res,413,{error:'单个附件大小需在1字节至25MB之间'})
    const attachment=await saveTaskAttachment({taskId:task.id,nodeCode,fileName,mimeType,content,uploadedBy:actor,uploadedRole:role})
    task.attachments=Array.isArray(task.attachments)?task.attachments:[]
    task.attachments.push(attachment)
@@ -1894,8 +1967,33 @@ const server=http.createServer(async(req,res)=>{
    const livePoints=await getTaskMetricTrend({employeeCode:task.employeeId,metricCode:task.metric?.code})
    return json(res,200,improvementSummary(task,livePoints))
   }
+  if(req.method==='GET'&&url.pathname==='/api/tasks/business-metrics'){
+   const current=requireReadySession(req),role=authorizeRuntimeRole(current,url.searchParams.get('role'))
+   if(!['manager','director'].includes(role))return json(res,403,{error:'仅经理与总监可查看PDCA经营效果指标'})
+   return json(res,200,pdcaBusinessMetrics(load().tasks))
+  }
   if(req.method==='POST'&&url.pathname==='/api/tasks'){
    const p=await body(req)
+   if(p.source==='business-trigger'){
+    const {current,role,actor}=requireRuntimeRole(req,p.role,['supervisor','manager','director','quality','training','hrbp'])
+    const targetRole=safeText(p.targetRole,32),allowed=requestTargets[role]||[]
+    if(!allowed.includes(targetRole))return json(res,403,{error:'当前岗位不能向该岗位发起业务督办'})
+    const title=safeText(p.title,120),problem=safeText(p.problem,1200),target=safeText(p.target,600),actionPlan=safeText(p.actionPlan,1200)
+    const idempotencyKey=safeText(p.idempotencyKey,128)
+    if(!title||problem.length<10||!target||actionPlan.length<10||!idempotencyKey)return json(res,400,{error:'业务触发任务缺少标题、问题、目标、行动或幂等键'})
+    const s=load(),sourceKey=`business-trigger:${idempotencyKey}`,duplicate=s.tasks.find(item=>item.sourceKey===sourceKey&&!item.voidedAt)
+    if(duplicate)return stateJson(res,200,s,current)
+    const suggestion=systemTargetSuggestion({...p,problem}),submitDueAt=normalizeDueAt(p.submitDueAt||new Date(Date.now()+24*60*60*1000).toISOString()),verificationDueAt=normalizeDueAt(p.verificationDueAt||new Date(Date.parse(submitDueAt)+24*60*60*1000).toISOString())
+    const task=normalizeLeanTask({
+     id:`BT-${Date.now()}-${Math.random().toString(36).slice(2,6)}`,eventId:`BUSINESS-${idempotencyKey}`,title,type:'业务督办',workflowKind:'lean_directive',sourceLabel:safeText(p.sourceLabel||'业务页面触发',80),sourceKey,
+     initiatorRole:role,initiatorName:actor,executionOwnerRole:targetRole,executionOwner:safeText(p.owner||roles[targetRole],128),ownerRole:targetRole,owner:safeText(p.owner||roles[targetRole],128),verificationRole:role,verificationOwner:actor,supervisor:actor,
+     status:'todo',phase:'P',progress:0,problem,issueCategory:safeText(p.issueCategory||'业务督办',64),issueLocation:safeText(p.issueLocation||'河北基地',500),target,
+     successCriteria:safeText(p.successCriteria||suggestion.successCriteria,1200),actionPlan,metric:{code:safeText(p.metricCode||suggestion.metricCode,64),label:safeText(p.metricLabel||suggestion.metricLabel,128),baseline:Number(p.baselineValue??suggestion.baselineValue),target:Number(p.targetValue??suggestion.targetValue),unit:safeText(p.metricUnit??suggestion.metricUnit,32),direction:p.metricDirection==='lower'?'lower':'higher'},
+     trigger:{type:safeText(p.triggerType||p.sourceLabel||'业务页面触发',80),rule:safeText(p.triggerRule||'',300),sourceObjectId:idempotencyKey,sourceLink:safeText(p.sourceLink||'',300),source:safeText(p.dataSource||'',300),evidence:safeText(p.triggerEvidence||problem,1200),baselineDate:safeText(p.baselineDate||'',32),triggeredAt:now()},
+     plannedStartAt:now(),submitDueAt,verificationDueAt,dueAt:submitDueAt,evidence:'',verification:'',createdAt:now(),updatedAt:now(),history:[{at:now(),actor,action:`从${p.sourceLabel||'业务页面'}生成真实PDCA任务：${problem}`}],
+    })
+    s.tasks.unshift(task);addNotice(s,targetRole,`业务督办：${title}`,`${actor}发起 · ${target} · 请于${new Date(submitDueAt).toLocaleString('zh-CN',{hour12:false})}前提交`,'tasks','high');audit(s,actor,`创建业务触发任务${task.id}`);await save(s);return stateJson(res,201,s,current)
+   }
    if(['management-directive','role-request'].includes(p.source)){
     const isRequest=p.source==='role-request'
     const allowedInitiators=isRequest?Object.keys(requestTargets):['supervisor','manager','director']
@@ -1916,19 +2014,22 @@ const server=http.createServer(async(req,res)=>{
      target:Number.isFinite(Number(p.targetValue))?Number(p.targetValue):suggestion.targetValue,
      unit:safeText(p.metricUnit??suggestion.metricUnit,32),direction:p.metricDirection==='lower'?'lower':'higher',
     }
-    const s=load(),day=new Date().toISOString().slice(0,10).replaceAll('-','')
+    const s=load(),appliedExperience=isRequest&&p.experienceId?s.excellence.experiences.find(item=>item.id===p.experienceId&&item.aiPublished):null,day=new Date().toISOString().slice(0,10).replaceAll('-','')
+    const duplicate=p.employeeCode&&Array.isArray(p.metricSet)&&p.metricSet.length>1?s.tasks.find(item=>item.employeeId===p.employeeCode&&item.status!=='closed'&&!item.voidedAt&&(item.metricSet||[item.metric]).some(value=>value?.code===metric.code)):null
+    if(duplicate)return json(res,409,{error:`${p.employeeName||p.employeeCode}已有同指标在办任务${duplicate.id}，请在原任务继续闭环`,code:'DUPLICATE_EMPLOYEE_METRIC_TASK',taskId:duplicate.id})
     const sequence=String(s.tasks.filter(item=>item.id.startsWith(`LP-${day}-`)).length+1).padStart(3,'0')
     const task=normalizeLeanTask({
      id:`LP-${day}-${sequence}`,eventId:`${isRequest?'REQUEST':'DIRECTIVE'}-${Date.now()}`,title,type:isRequest?'岗位需求':'管理指派',workflowKind:'lean_directive',
      sourceLabel:isRequest?'岗位任务需求':'精益管理任务',sourceKey:`${p.source}:${Date.now()}`,initiatorRole:role,initiatorName:actor,
      originRole:targetRole,executionOwnerRole:targetRole,executionOwner:owner,ownerRole:targetRole,owner,
      verificationRole:role,verificationOwner:actor,supervisor:actor,status:'todo',phase:'P',progress:0,
-     problem,issueCategory,issueLocation,target,successCriteria,actionPlan,metric,
+     problem,issueCategory,issueLocation,target,successCriteria,actionPlan,metric,metricSet:Array.isArray(p.metricSet)?p.metricSet.slice(0,8):[metric],experienceAppliedId:appliedExperience?.id||'',
      employeeId:safeText(p.employeeCode||'',64),person:safeText(p.employeeName||'',128),team:safeText(p.team||'',255),
      plannedStartAt,submitDueAt,verificationDueAt,dueAt:submitDueAt,evidence:'',verification:'',
      aiRationale:safeText(p.aiRationale||suggestion.rationale,1200),attachments:[],createdAt:now(),updatedAt:now(),
-     history:[{at:now(),actor,action:`${isRequest?'发起岗位任务需求至':'自上而下指派'}${roles[targetRole]}：${problem}；目标：${target}；提交时限：${submitDueAt}`}],
+     history:[{at:now(),actor,action:`${isRequest?'发起岗位任务需求至':'自上而下指派'}${roles[targetRole]}：${problem}；目标：${target}；提交时限：${submitDueAt}`},...(appliedExperience?[{at:now(),actor,action:`采用AI推荐经验${appliedExperience.id}：${appliedExperience.title}`}]:[])],
     })
+    if(appliedExperience)appliedExperience.invocationCount=Number(appliedExperience.invocationCount||0)+1
     s.tasks.unshift(task)
     addNotice(s,targetRole,isRequest?`任务需求待响应：${title}`:`上级指派任务：${title}`,`${actor}${isRequest?'发起需求':'下发'} · ${target} · ${new Date(submitDueAt).toLocaleString('zh-CN',{hour12:false})}前提交`,'tasks','high')
     audit(s,actor,`创建${isRequest?'岗位任务需求':'精益管理任务'}${task.id}并交由${roles[targetRole]}处理`)
@@ -1941,7 +2042,7 @@ const server=http.createServer(async(req,res)=>{
    const employee=p.employee
    if(!employee||!employee.name||!employee.jobNo||!employee.team||!employee.reason||!p.reportDate)return json(res,400,{error:'员工、工号、班组、通报原因和报表日期不能为空'})
    const sourceKey=`team-morning-brief:${String(p.reportDate).slice(0,10)}:${String(employee.jobNo).trim()}`
-   const duplicate=s.tasks.find(task=>task.sourceKey===sourceKey&&task.status!=='closed')
+   const duplicate=s.tasks.find(task=>task.sourceKey===sourceKey&&task.status!=='closed'&&!task.voidedAt)
    if(duplicate)return json(res,409,{error:`${employee.name}已有未关闭的晨会PDCA任务`,taskId:duplicate.id})
    const category=employee.category==='重点员工'?'经验复盘':'辅导改善'
    const t={
@@ -1962,7 +2063,7 @@ const server=http.createServer(async(req,res)=>{
    const p=await body(req),{current,actor}=requireRuntimeRole(req,p.role,['supervisor'])
    const s=load(),e=s.events.find(x=>x.id===m[1]);if(!e)return json(res,404,{error:'事件不存在'});if(e.status!=='pending_supervisor_review')return json(res,409,{error:'当前状态不可审批'});if(!['approve','reject'].includes(p.action))return json(res,400,{error:'未知审批操作'});
    if(p.action==='reject'){e.status='rejected';e.currentRole='supervisor';e.history.push({at:now(),actor,action:`驳回预警：${p.comment||'数据不充分'}`});audit(s,actor,`驳回${e.id}`)}
-   else if(p.action==='approve'){e.status='approved';e.currentRole='leader';e.history.push({at:now(),actor,action:`确认预警并生成任务：${p.comment||'同意建议动作'}`});const t={id:`TK-${Date.now()}`,eventId:e.id,title:e.title,type:e.type,ownerRole:'leader',owner:'张伟（班长）',supervisor:'前台客服主管',status:'todo',phase:'D',progress:0,dueAt:e.dueAt,evidence:'',verification:'',createdAt:now(),updatedAt:now(),history:[{at:now(),actor,action:'主管确认，任务已下发班长'}]};s.tasks.unshift(t);addNotice(s,'leader',`主管已确认：${e.title}`,'请在截止时间前执行并提交证据。','tasks','high');audit(s,actor,`确认${e.id}并创建${t.id}`)}await save(s);return stateJson(res,200,s,current)
+   else if(p.action==='approve'){e.status='approved';e.currentRole='leader';e.history.push({at:now(),actor,action:`确认预警并生成任务：${p.comment||'同意建议动作'}`});const t=normalizeLeanTask({id:`TK-${Date.now()}`,eventId:e.id,title:e.title,type:e.type,workflowKind:'legacy_alert',sourceKey:`event:${e.id}`,sourceLabel:'AI预警确认',ownerRole:'leader',owner:'责任班长',executionOwnerRole:'leader',executionOwner:'责任班长',initiatorRole:'supervisor',initiatorName:actor,verificationRole:'supervisor',verificationOwner:actor,supervisor:'前台客服主管',status:'todo',phase:'P',progress:0,dueAt:e.dueAt,submitDueAt:e.dueAt,verificationDueAt:new Date(Date.parse(e.dueAt)+24*60*60*1000).toISOString(),evidence:'',verification:'',createdAt:now(),updatedAt:now(),problem:e.evidence,issueCategory:e.type,issueLocation:e.team,target:e.suggestion,actionPlan:e.suggestion,trigger:{type:e.type,rule:e.rule,sourceObjectId:e.id,sourceLink:'alerts',source:e.source,evidence:e.evidence,triggeredAt:e.createdAt},history:[{at:now(),actor,action:`主管确认预警并下发：${e.evidence}`} ]});s.tasks.unshift(t);addNotice(s,'leader',`主管已确认：${e.title}`,'请在截止时间前执行并提交证据。','tasks','high');audit(s,actor,`确认${e.id}并创建${t.id}`)}await save(s);return stateJson(res,200,s,current)
   }
   m=url.pathname.match(/^\/api\/tasks\/([^/]+)\/action$/)
   if(req.method==='POST'&&m){
@@ -1979,7 +2080,17 @@ const server=http.createServer(async(req,res)=>{
    }
    const leanRelated=[t.initiatorRole,t.executionOwnerRole,t.ownerRole,t.verificationRole].includes(role)
    const leanManager=role==='director'||role==='manager'||(role==='supervisor'&&['leader','employee'].includes(t.executionOwnerRole))
-   if(p.action==='task_comment'){
+   if(!actionAllowed(t,p.action))return json(res,409,{error:`动作${safeText(p.action,40)}不属于${t.templateKind||t.workflowKind||'当前'}任务工作流`})
+   if(t.voidedAt)return json(res,409,{error:'该任务已经作废，仅经理和总监可查阅，不允许继续操作',code:'TASK_ALREADY_VOIDED'})
+   if(p.action==='task_void'){
+    const allowed=role==='manager'||role==='director'||role===t.initiatorRole||role===t.originRole||role===t.executionOwnerRole||role===t.ownerRole||role===t.verificationRole
+    if(!allowed)return json(res,403,{error:'仅任务发起岗位、执行岗位、经理或总监可以作废任务',code:'TASK_VOID_FORBIDDEN'})
+    const reason=safeText(p.comment,1000)
+    if(reason.length<5)return json(res,400,{error:'请填写至少5字的作废原因',code:'TASK_VOID_REASON_REQUIRED'})
+    t.voidedAt=now();t.voidedBy=actor;t.voidedByRole=role;t.voidReason=reason;t.voidedFromStatus=t.status;t.nextFollowUpAt=''
+    recordManagement('void',`任务作废：${reason}`,{before:{status:t.status,ownerRole:t.ownerRole},after:{classification:'voided'}})
+   }
+   else if(p.action==='task_comment'){
     const allowed=leanRelated||leanManager||[t.originRole,t.ownerRole,t.verificationRole].includes(role)
     if(!allowed)return json(res,403,{error:'当前岗位不能评论该任务'})
     const nodeCode=safeText(p.nodeCode,1).toUpperCase(),nodeNames={P:'目标设定',D:'执行改善',C:'验证结果',A:'闭环固化'}
@@ -2065,6 +2176,8 @@ const server=http.createServer(async(req,res)=>{
     if(t.workflowKind!=='lean_directive'||role!==t.executionOwnerRole||t.ownerRole!==role||!['doing','returned_to_origin'].includes(t.status))return json(res,409,{error:'当前岗位不能提交该精益任务'})
     const evidence=safeText(p.evidence,3000)
     if(evidence.length<10)return json(res,400,{error:'请填写至少10字的执行结果和证据说明'})
+    if(p.actualValue===undefined||p.actualValue===''||!Number.isFinite(Number(p.actualValue)))return json(res,400,{error:'数据驱动任务必须填写提交时的实际指标值'})
+    if(Number(t.evidencePolicy?.requiredAttachments||0)>(t.attachments||[]).length)return json(res,409,{error:`该任务要求至少${t.evidencePolicy.requiredAttachments}份附件，当前仅${(t.attachments||[]).length}份`})
     t.status='pending_verification';t.ownerRole=t.verificationRole;t.owner=t.verificationOwner||roles[t.verificationRole]
     t.phase='C';t.progress=80;t.evidence=evidence;t.submittedAt=now()
     if(p.actualValue!==undefined&&p.actualValue!==''&&Number.isFinite(Number(p.actualValue))){
@@ -2084,10 +2197,24 @@ const server=http.createServer(async(req,res)=>{
     if(t.workflowKind!=='lean_directive'||role!==t.verificationRole||t.ownerRole!==role||t.status!=='pending_verification')return json(res,409,{error:'当前岗位不能验收该精益任务'})
     const comment=safeText(p.comment,2000)
     if(comment.length<10)return json(res,400,{error:'请结合目标、系统趋势和附件填写至少10字的验收结论'})
+    if(t.employeeId&&(t.metricSet||[]).length>1){
+     const scoped=await getScopedTeamMember({role,jobNo:current.user.jobNo,name:current.user.name,isSystemAdmin:current.user.roleId==='system-admin',employeeCode:t.employeeId})
+     if(scoped.member){
+      const live=scoped.member,actuals={responses:live.metrics.responses.actual,work_hours:live.productivityDrivers.workHours.actual,utilization:live.productivityDrivers.utilization.actual,att:live.productivityDrivers.talkTime.actual,acw:live.productivityDrivers.afterCall.actual}
+      t.metricSnapshots=Array.isArray(t.metricSnapshots)?t.metricSnapshots:[]
+      for(const item of t.metricSet){const value=actuals[item.code];if(value!=null)t.metricSnapshots.push({id:`${t.id}:system:${item.code}:${Date.now()}`,metricCode:item.code,metricLabel:item.label,actual:value,target:item.target,unit:item.unit,direction:item.direction,type:'system',source:'班组看数事实表',observedAt:now(),note:`验收时自动读取${live.dataDate}快照`})}
+     }
+    }
+    const gate=verificationGate(t)
+    if(!gate.hasActual)return json(res,409,{error:'缺少可验证的实际指标值，不能验收关闭',code:'PDCA_ACTUAL_REQUIRED'})
+    if(!gate.evidenceComplete)return json(res,409,{error:'执行证据或必需附件不完整，不能验收关闭',code:'PDCA_EVIDENCE_INCOMPLETE'})
+    if(!gate.targetMet){const missed=(gate.metricResults||[]).filter(item=>!item.targetMet).map(item=>`${item.label}${item.actual??'缺数据'}/${item.target??'未配目标'}${item.unit}`).join('、');return json(res,409,{error:`联合验收未通过：${missed||`实际值${gate.actual}${t.metric.unit}未达到目标${gate.target}${t.metric.unit}`}，请退回整改或申请例外关闭`,code:'PDCA_TARGET_NOT_MET'})}
     t.status='closed';t.phase='A';t.progress=100;t.verification=comment;t.verifiedAt=now();t.closedAt=now()
     completeTaskNode(t,'verify',{actor,role,result:comment})
     completeTaskNode(t,'act',{actor,role,result:safeText(p.standardizedAction||comment,1200)})
     t.standardizedAction=safeText(p.standardizedAction||comment,1200)
+    const candidate=experienceCandidateFromTask(t,actor)
+    if(candidate&&!s.excellence.experiences.some(item=>item.id===candidate.id)){s.excellence.experiences.unshift(candidate);t.experienceCandidateId=candidate.id}
     t.history.push({at:now(),actor,action:`对照${t.metric.label}目标验收通过并关闭：${comment}`})
     addNotice(s,t.executionOwnerRole,`精益任务已验收：${t.title}`,comment,'tasks','normal')
    }
@@ -2095,12 +2222,34 @@ const server=http.createServer(async(req,res)=>{
     if(t.workflowKind!=='lean_directive'||role!==t.verificationRole||t.ownerRole!==role||t.status!=='pending_verification')return json(res,409,{error:'当前岗位不能退回该精益任务'})
     const comment=safeText(p.comment,2000)
     if(comment.length<10)return json(res,400,{error:'请填写至少10字的未达标事实和补充要求'})
-    t.status='returned_to_origin';t.ownerRole=t.executionOwnerRole;t.owner=t.executionOwner;t.phase='D';t.progress=45
+    t.status='returned_to_origin';t.ownerRole=t.executionOwnerRole;t.owner=t.executionOwner;t.phase='D';t.progress=45;t.remediationRound=Number(t.remediationRound||1)+1
     t.supervisorGuidance=comment
     const executeNode=t.nodes?.find(item=>item.code==='execute');if(executeNode){executeNode.status='active';executeNode.completedAt=''}
+    const submitNode=t.nodes?.find(item=>item.code==='submit');if(submitNode){submitNode.status='pending';submitNode.completedAt='';submitNode.result=''}
     const verifyNode=t.nodes?.find(item=>item.code==='verify');if(verifyNode){verifyNode.status='pending';verifyNode.completedAt=''}
     t.history.push({at:now(),actor,action:`系统趋势或证据未达到目标，退回${roles[t.executionOwnerRole]}：${comment}`})
     addNotice(s,t.executionOwnerRole,`精益任务退回整改：${t.title}`,comment,'tasks','high')
+   }
+   else if(p.action==='lean_exception_request'){
+    if(t.workflowKind!=='lean_directive'||role!==t.verificationRole||t.ownerRole!==role||t.status!=='pending_verification')return json(res,409,{error:'仅当前验收岗位可申请例外关闭'})
+    const comment=safeText(p.comment,2000),gate=verificationGate(t)
+    if(comment.length<20)return json(res,400,{error:'请填写至少20字的未达标原因、业务影响和后续监控计划'})
+    if(gate.targetMet)return json(res,409,{error:'指标已经达标，请使用正常验收关闭'})
+    const approvalRole=role==='director'?'director':role==='manager'?'director':'manager'
+    t.status='exception_pending';t.ownerRole=approvalRole;t.owner=roles[approvalRole];t.exceptionRequest={requestedBy:actor,requestedRole:role,reason:comment,requestedAt:now(),gate}
+    t.history.push({at:now(),actor,action:`申请例外关闭并提交${roles[approvalRole]}审批：${comment}`});addNotice(s,approvalRole,`PDCA例外关闭待审批：${t.title}`,comment,'tasks','high')
+   }
+   else if(p.action==='lean_exception_approve'){
+    if(t.workflowKind!=='lean_directive'||t.status!=='exception_pending'||role!==t.ownerRole)return json(res,409,{error:'仅当前例外审批岗位可以处理'})
+    const comment=safeText(p.comment,2000)
+    if(comment.length<10)return json(res,400,{error:'请填写至少10字的例外审批结论'})
+    if(p.decision!=='approve'){
+     t.status='returned_to_origin';t.ownerRole=t.executionOwnerRole;t.owner=t.executionOwner;t.phase='D';t.progress=45;t.remediationRound=Number(t.remediationRound||1)+1;t.supervisorGuidance=comment
+     t.history.push({at:now(),actor,action:`例外关闭未批准，退回整改：${comment}`});addNotice(s,t.executionOwnerRole,`例外关闭被拒绝：${t.title}`,comment,'tasks','high')
+    }else{
+     t.status='closed';t.phase='A';t.progress=100;t.verification=comment;t.verifiedAt=now();t.closedAt=now();t.exceptionClosure={approvedBy:actor,approvedRole:role,reason:t.exceptionRequest?.reason||'',decision:comment,approvedAt:now()}
+     t.history.push({at:now(),actor,action:`批准例外关闭（不进入先进经验库）：${comment}`});addNotice(s,t.executionOwnerRole,`任务例外关闭：${t.title}`,comment,'tasks','normal')
+    }
    }
    else if(p.action==='meeting_start'){
     if(t.workflowKind!=='meeting_action'||role!==t.ownerRole||!['todo','returned_to_origin'].includes(t.status))return json(res,409,{error:'当前经营例会行动不可开始'})
@@ -2179,6 +2328,8 @@ const server=http.createServer(async(req,res)=>{
     if(p.role!=='director'||t.ownerRole!=='director'||!['escalated','executive_escalated'].includes(t.status))return json(res,403,{error:'仅当前责任运营总监可退回'});t.status='escalated';t.ownerRole='manager';t.phase='A';t.progress=80;t.managerGuidance=p.comment||'请经理重新组织专项改善';t.history.push({at:now(),actor,action:`总监退回客服经理：${t.managerGuidance}`});addNotice(s,'manager',`总监退回指导：${t.title}`,t.managerGuidance,'tasks','high')
    }
    else if(p.action==='escalate'){
+    if(role!==t.ownerRole)return json(res,403,{error:'仅当前责任岗位可发起逾期升级'})
+    if(Date.parse(t.dueAt)>Date.now())return json(res,409,{error:'任务尚未逾期，不能提前升级'})
     const chain=['leader','supervisor','manager','director'];let i=chain.indexOf(t.ownerRole);if(i<chain.length-1)t.ownerRole=chain[i+1];t.status='escalated';t.history.push({at:now(),actor,action:`逾期升级至${roles[t.ownerRole]}`});addNotice(s,t.ownerRole,`逾期升级：${t.title}`,`任务已升级至${roles[t.ownerRole]}。`,'tasks','high')
    } else return json(res,400,{error:'未知操作'});t.updatedAt=now();audit(s,actor,`${p.action} ${t.id}`)
    const newNotices=s.notifications.filter(item=>!noticeIdsBefore.has(item.id))
@@ -2188,8 +2339,9 @@ const server=http.createServer(async(req,res)=>{
    return taskActionJson(res,200,saved,current,t.id,new Set(newNotices.map(item=>item.id)))
   }
   if(req.method==='POST'&&url.pathname==='/api/simulate-timeout'){
+   if(process.env.NODE_ENV!=='test')return json(res,404,{error:'接口不存在'})
    const p=await body(req),{current,role,actor}=requireRuntimeRole(req,p.role)
-   const s=load(),t=s.tasks.find(x=>x.status!=='closed'&&x.ownerRole===role);if(!t)return json(res,409,{error:'当前岗位暂无可升级任务'});const chain=['leader','supervisor','manager','director'];let i=chain.indexOf(t.ownerRole);if(i>=chain.length-1)return json(res,409,{error:'当前已是最高责任层级'});t.ownerRole=chain[i+1];t.status='escalated';t.history.push({at:now(),actor,action:`触发SLA逾期升级至${roles[t.ownerRole]}`});addNotice(s,t.ownerRole,`SLA逾期：${t.title}`,`任务已自动升级至${roles[t.ownerRole]}。`,'tasks','high');audit(s,actor,`触发SLA升级${t.id}`);await save(s);return stateJson(res,200,s,current)
+   const s=load(),t=s.tasks.find(x=>x.status!=='closed'&&!x.voidedAt&&x.ownerRole===role);if(!t)return json(res,409,{error:'当前岗位暂无可升级任务'});const chain=['leader','supervisor','manager','director'];let i=chain.indexOf(t.ownerRole);if(i>=chain.length-1)return json(res,409,{error:'当前已是最高责任层级'});t.ownerRole=chain[i+1];t.status='escalated';t.history.push({at:now(),actor,action:`触发SLA逾期升级至${roles[t.ownerRole]}`});addNotice(s,t.ownerRole,`SLA逾期：${t.title}`,`任务已自动升级至${roles[t.ownerRole]}。`,'tasks','high');audit(s,actor,`触发SLA升级${t.id}`);await save(s);return stateJson(res,200,s,current)
   }
   if(!url.pathname.startsWith('/api/')){
    const rel=url.pathname==='/'?'index.html':url.pathname.replace(/^\//,'')
@@ -2235,12 +2387,33 @@ const scheduleRefresh=()=>{
 }
 scheduleRefresh()
 
+let slaTimer
+const runScheduledSla=async()=>{
+ const bucket=String(Math.floor(Date.now()/(60*1000)))
+ try{
+  const claimed=await claimScheduledBatch('pdca_sla_sweep',bucket,instanceId)
+  if(!claimed)return
+  const state=load(),changed=applyTaskSlaSweep(state)
+  if(changed)await save(state)
+  await finishScheduledBatch('pdca_sla_sweep',bucket,'completed',`处理${changed}个提醒或升级动作`)
+ }catch(error){
+  await finishScheduledBatch('pdca_sla_sweep',bucket,'failed',error.message).catch(()=>{})
+  console.error(`PDCA SLA扫描失败: ${error.code||error.message}`)
+ }
+}
+if(process.env.NODE_ENV!=='test'){
+ slaTimer=setInterval(()=>void runScheduledSla(),60*1000)
+ slaTimer.unref()
+ setTimeout(()=>void runScheduledSla(),2_000).unref()
+}
+
 let shuttingDown=false
 const shutdown=signal=>{
  if(shuttingDown)return
  shuttingDown=true
  console.log(`收到${signal}，正在安全停止服务`)
  if(refreshTimer)clearTimeout(refreshTimer)
+ if(slaTimer)clearInterval(slaTimer)
  stopTaskOutboxWorker()
  const forceTimer=setTimeout(()=>process.exit(1),10_000)
  server.close(async()=>{

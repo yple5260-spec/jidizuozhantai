@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { databaseConfigured, databaseTransaction } from './database.js'
+import { databaseConfigured, databaseQuery, databaseTransaction } from './database.js'
 import { syncTaskDerivedWithConnection } from './taskActionPersistence.js'
 
 const workerId=`task-outbox-${randomUUID()}`
@@ -8,7 +8,7 @@ let running=false
 
 const claim=()=>databaseTransaction(async connection=>{
  const [rows]=await connection.query(`
-  SELECT id,aggregate_id,event_type,state_revision,payload_json
+  SELECT id,aggregate_id,event_type,state_revision,payload_json,attempts
   FROM platform_business_outbox
   WHERE (status IN ('pending','failed') AND available_at<=CURRENT_TIMESTAMP(3))
      OR (status='processing' AND locked_at<DATE_SUB(CURRENT_TIMESTAMP(3),INTERVAL 5 MINUTE))
@@ -48,12 +48,23 @@ const complete=event=>databaseTransaction(async connection=>{
 })
 
 const fail=async(event,error)=>{
- const delaySeconds=Math.min(300,Math.max(2,2**Math.min(Number(event.attempts||1),8)))
+ const attempt=Number(event.attempts||0)+1
+ const delaySeconds=Math.min(300,Math.max(2,2**Math.min(attempt,8)))
  await databaseTransaction(connection=>connection.query(`
   UPDATE platform_business_outbox
-  SET status='failed',available_at=DATE_ADD(CURRENT_TIMESTAMP(3),INTERVAL ? SECOND),
+  SET status=?,available_at=DATE_ADD(CURRENT_TIMESTAMP(3),INTERVAL ? SECOND),
       locked_at=NULL,locked_by=NULL,last_error=?
-  WHERE id=?`,[delaySeconds,String(error?.code||error?.message||'异步投影失败').slice(0,2000),event.id]))
+  WHERE id=?`,[attempt>=8?'dead_letter':'failed',delaySeconds,String(error?.code||error?.message||'异步投影失败').slice(0,2000),event.id]))
+}
+
+export const taskOutboxHealth=async()=>{
+ if(!databaseConfigured())return {mode:'local',pending:0,failed:0,deadLetter:0,oldestAgeSeconds:0}
+ const rows=await databaseQuery(`SELECT
+  SUM(status IN ('pending','processing')) AS pending,SUM(status='failed') AS failed,SUM(status='dead_letter') AS deadLetter,
+  COALESCE(TIMESTAMPDIFF(SECOND,MIN(CASE WHEN status IN ('pending','failed','processing') THEN created_at END),CURRENT_TIMESTAMP),0) AS oldestAgeSeconds
+  FROM platform_business_outbox`)
+ const item=rows[0]||{}
+ return {mode:'mysql',pending:Number(item.pending||0),failed:Number(item.failed||0),deadLetter:Number(item.deadLetter||0),oldestAgeSeconds:Number(item.oldestAgeSeconds||0)}
 }
 
 export const drainTaskOutbox=async(limit=20)=>{

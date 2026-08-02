@@ -1,3 +1,5 @@
+import { inferWorkflowKind } from './pdcaEngine.js'
+
 const finite=value=>{
  const parsed=Number(value)
  return Number.isFinite(parsed)?parsed:null
@@ -83,12 +85,27 @@ export const normalizeLeanTask=source=>{
  task.target=task.target||task.successCriteria||metricSuggestion.target
  task.successCriteria=task.successCriteria||metricSuggestion.successCriteria
  task.actionPlan=task.actionPlan||task.requirement||metricSuggestion.actionSuggestion
+ task.schemaVersion=2
+ task.workflowKind=inferWorkflowKind(task)
+ task.templateKind=task.templateKind||task.workflowKind
+ task.trigger={
+  type:task.trigger?.type||task.sourceLabel||task.type||'人工任务',rule:task.trigger?.rule||task.triggerRule||'',
+  sourceObjectId:task.trigger?.sourceObjectId||task.eventId||task.sourceKey||'',sourceLink:task.trigger?.sourceLink||'',
+  source:task.trigger?.source||task.sourceLabel||'',evidence:task.trigger?.evidence||task.triggerEvidence||task.qualityEvidence||task.problem||'',
+  baselineDate:task.trigger?.baselineDate||'',triggeredAt:task.trigger?.triggeredAt||createdAt,
+ }
+ task.evidencePolicy=task.evidencePolicy||{requiredAttachments:0,requiredTypes:[],description:'执行结果与量化指标为必填；附件按任务模板要求提交'}
+ task.slaPolicy=task.slaPolicy||{enabled:Date.now()-Date.parse(createdAt)<24*60*60*1000,remindHours:[4,1],escalateAfterMinutes:5,migrationPending:Date.now()-Date.parse(createdAt)>=24*60*60*1000}
+ task.remediationRound=Math.max(1,Number(task.remediationRound||1))
  task.metric={
   code:task.metric?.code||metricSuggestion.metricCode,label:task.metric?.label||metricSuggestion.metricLabel,
   baseline:finite(task.metric?.baseline??task.baselineValue)??metricSuggestion.baselineValue,
   target:finite(task.metric?.target??task.targetValue)??metricSuggestion.targetValue,
   unit:task.metric?.unit??metricSuggestion.metricUnit,direction:task.metric?.direction||metricSuggestion.metricDirection,
  }
+ task.metricSet=(Array.isArray(task.metricSet)&&task.metricSet.length?task.metricSet:[task.metric]).map(item=>({
+  code:String(item.code||''),label:String(item.label||item.code||''),baseline:finite(item.baseline),target:finite(item.target),unit:String(item.unit||''),direction:item.direction==='lower'?'lower':'higher',required:item.required!==false,
+ })).filter(item=>item.code)
  task.plannedStartAt=iso(task.plannedStartAt,createdAt)
  task.submitDueAt=iso(task.submitDueAt,dueAt)
  task.verificationDueAt=iso(task.verificationDueAt||task.reinspectAt,new Date(Date.parse(dueAt)+24*60*60*1000).toISOString())
@@ -98,6 +115,11 @@ export const normalizeLeanTask=source=>{
  task.archivedAt=task.archivedAt||''
  task.archivedBy=task.archivedBy||''
  task.archiveNote=task.archiveNote||''
+ task.voidedAt=task.voidedAt||''
+ task.voidedBy=task.voidedBy||''
+ task.voidedByRole=task.voidedByRole||''
+ task.voidReason=task.voidReason||''
+ task.voidedFromStatus=task.voidedFromStatus||''
  task.nextFollowUpAt=task.nextFollowUpAt||''
  task.lastFollowUpAt=task.lastFollowUpAt||''
  task.interventionCount=Number(task.interventionCount||0)

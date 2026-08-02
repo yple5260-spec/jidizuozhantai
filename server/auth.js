@@ -4,9 +4,8 @@ import { loadAccess, publicAccess } from './accessStore.js'
 const cookieName='hebei_session'
 const maxAgeSeconds=Math.max(15*60,Math.min(Number(process.env.SESSION_MAX_AGE_SECONDS)||8*60*60,7*24*60*60))
 const configuredSecret=String(process.env.SESSION_SECRET||'').trim()
-if(process.env.NODE_ENV==='production'&&configuredSecret.length<32)throw new Error('生产环境必须配置至少32位的 SESSION_SECRET')
 const sessionSecret=configuredSecret.length>=32?configuredSecret:randomBytes(48).toString('base64url')
-if(!configuredSecret&&process.env.NODE_ENV!=='test')console.warn('SESSION_SECRET未配置，本次启动使用临时签名密钥；服务重启后现有登录态将失效。')
+if(configuredSecret.length<32&&process.env.NODE_ENV!=='test')console.warn(`${configuredSecret?'长度不足32位的':'未配置'} SESSION_SECRET，本次启动使用随机临时签名密钥；服务重启后现有登录态将失效。`)
 
 const fail=(status,message,code)=>{throw Object.assign(new Error(message),{status,code})}
 const parseCookies=req=>Object.fromEntries(String(req.headers.cookie||'').split(';').map(item=>item.trim()).filter(Boolean).map(item=>{const index=item.indexOf('=');return index<0?[item,'']:[item.slice(0,index),decodeURIComponent(item.slice(index+1))]}))

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
  AlertTriangle, ArrowUpRight, BarChart3, CalendarDays, CheckCircle2, ClipboardCheck, Clock3,
  FileBarChart, GraduationCap, MessageSquareText, Plus, RefreshCw, Send, ShieldCheck, Target, Users, X,
@@ -122,7 +122,7 @@ function ReportView({role,cases,notify}:{role:Role;cases:DevelopmentCase[];notif
 }
 
 export default function DevelopmentWorkHub({role,state,setState,notify,employeeId}:Props){
- const [tab,setTab]=useState<'all'|'mine'|'closed'>('all')
+ const [tab,setTab]=useState<'all'|'mine'|'closed'>(()=>role==='training'?'mine':'all')
  const [createOpen,setCreateOpen]=useState(false)
  const [form,setForm]=useState<FormState>(()=>defaultForm(employeeId))
  const [selected,setSelected]=useState<DevelopmentCase|null>(null)
@@ -132,6 +132,7 @@ export default function DevelopmentWorkHub({role,state,setState,notify,employeeI
  const [commentNode,setCommentNode]=useState<DevelopmentCommentNode>('plan')
  const [managementComment,setManagementComment]=useState('')
  const [busy,setBusy]=useState(false)
+ useEffect(()=>{if(role==='training')setTab('mine')},[role])
  const source=state?.learning.developmentCases||[]
  const employees=useMemo(()=>{
   const live=(state?.workforce.employees||[]).filter(item=>item.role==='employee').map(item=>({jobNo:item.jobNo,name:item.name,team:item.team}))
@@ -146,7 +147,10 @@ export default function DevelopmentWorkHub({role,state,setState,notify,employeeI
  const management=['supervisor','manager','director'].includes(role)
  const canInitiate=['leader','quality','training'].includes(role)
  const attentionCases=cases.filter(item=>['returned','pending_verification'].includes(item.status)||Date.parse(item.dueAt)-Date.now()<24*60*60*1000)
- const displayed=cases.filter(item=>tab==='closed'?item.status==='closed':tab==='mine'?management?attentionCases.includes(item):(item.ownerRole===role||item.verificationRole===role)&&item.status!=='closed':item.status!=='closed')
+ const displayed=cases.filter(item=>tab==='closed'?item.status==='closed':tab==='mine'?management?attentionCases.includes(item):(item.ownerRole===role||item.verificationRole===role)&&item.status!=='closed':item.status!=='closed').sort((left,right)=>{
+  const priority=(item:DevelopmentCase)=>item.status==='pending_verification'&&item.ownerRole===role?0:item.ownerRole===role?1:2
+  return priority(left)-priority(right)||Date.parse(left.verificationDueAt||left.dueAt)-Date.parse(right.verificationDueAt||right.dueAt)
+ })
  const run=async(work:()=>Promise<WorkflowState>,success:string)=>{
   if(busy)return false
   setBusy(true)

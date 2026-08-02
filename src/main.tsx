@@ -18,9 +18,13 @@ import './lean-pdca.css'
 import './development.css'
 import './team-actions.css'
 import './excellence.css'
+import './phrase-library.css'
 import './budget-achievement.css'
 import './budget-focus-light.css'
 import './morning-briefing-hub.css'
+import './rpa-role.css'
+import './readability.css'
+import './team-operations.css'
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode><App /></React.StrictMode>

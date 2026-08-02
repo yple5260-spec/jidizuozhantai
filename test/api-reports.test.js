@@ -103,3 +103,33 @@ test('生成CSV、下载留痕并通过复位清理',async()=>{
   assert.deepEqual(backup,main)
  }finally{await app.close()}
 })
+
+test('RPA报表按管理层级、质检、培训和HRBP岗位返回对应数据范围',async()=>{
+ const app=await startServer()
+ try{
+  const leader=await app.request('GET','/api/reports/preview?projectId=north-center-10015&reportType=team-morning-brief&role=leader')
+  const supervisor=await app.request('GET','/api/reports/preview?projectId=north-center-10015&reportType=team-morning-brief&role=supervisor')
+  const manager=await app.request('GET','/api/reports/preview?projectId=north-center-10015&reportType=team-morning-brief&role=manager')
+  const director=await app.request('GET','/api/reports/preview?projectId=north-center-10015&reportType=team-morning-brief&role=director')
+  assert.equal(leader.status,200)
+  assert.equal(leader.data.roleView.kind,'people')
+  assert.ok(leader.data.roleView.peopleRows.length<supervisor.data.roleView.peopleRows.length)
+  assert.ok(supervisor.data.roleView.peopleRows.length<manager.data.roleView.peopleRows.length)
+  assert.equal(manager.data.roleView.peopleRows.length,director.data.roleView.peopleRows.length)
+  assert.match(director.data.roleView.scopePolicy,/当前附件覆盖10015升投/)
+
+  const qualityCatalog=await app.request('GET','/api/reports/catalog?role=quality')
+  assert.deepEqual(qualityCatalog.data.reports.map(item=>item.id),['quality-daily'])
+  const quality=await app.request('GET','/api/reports/preview?projectId=north-center-10015&reportType=quality-daily&role=quality')
+  assert.equal(quality.data.roleView.kind,'quality')
+  assert.equal(quality.data.roleView.qualityRows.length,21)
+  assert.ok(quality.data.roleView.qualityRows.some(item=>item.responsibility==='红线'&&item.task.metricCode==='quality_remediation'))
+
+  const training=await app.request('GET','/api/reports/preview?projectId=north-center-10015&reportType=attrition-training-daily&role=training')
+  const hrbp=await app.request('GET','/api/reports/preview?projectId=north-center-10015&reportType=attrition-hrbp-daily&role=hrbp')
+  assert.equal(training.data.roleView.attritionRows.length,22)
+  assert.equal(hrbp.data.roleView.attritionRows.length,22)
+  assert.equal(training.data.roleView.attritionRows[0].task.metricCode,'training_coverage')
+  assert.equal(hrbp.data.roleView.attritionRows[0].task.metricCode,'retention_interview_coverage')
+ }finally{await app.close()}
+})

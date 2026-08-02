@@ -121,7 +121,16 @@ test('固化先进遵循量化门槛、AI匹配与质检录音权限',async()=>{
   const state=(await app.request('GET','/api/state')).data
   assert.equal(state.excellence.evaluation.topPercent,20)
   assert.equal(state.excellence.employeeAchievements.length,10)
+  assert.equal(state.excellence.scorecardVersion,2)
+  assert.deepEqual(state.excellence.evaluation.weights,{productivity:20,quality:20,satisfaction:20,fcr:20,marketing:20})
+  assert.ok(state.excellence.employeeAchievements.every(item=>item.dimensions.length===5&&Number.isFinite(item.compositeScore)))
+  assert.deepEqual(state.excellence.employeeAchievements[0].dimensions.map(item=>item.code),['productivity','quality','satisfaction','fcr','marketing'])
   assert.ok(state.excellence.experiences.every(item=>item.sourceTaskId&&item.evidence.length))
+  assert.equal(state.excellence.phraseLibraryVersion,2)
+  assert.deepEqual([...new Set(state.excellence.phrases.map(item=>item.category))].sort(),['优秀服务话术','催单话术','问题解决话术'].sort())
+  assert.ok(state.excellence.phrases.length>=9)
+  assert.ok(state.excellence.phrases.every(item=>item.customerSignal&&item.objective&&item.steps.length>=3&&item.avoid.length>=3))
+  assert.ok(state.excellence.phrases.some(item=>item.title.includes('错充号码')&&item.text.includes('先帮您把这笔订单核清楚')))
   const access=(await app.request('GET','/api/access')).data
   assert.ok(access.roles.find(item=>item.id==='customer-agent').menus.includes('excellence'))
   assert.ok(access.roles.find(item=>item.id==='quality-specialist').menus.includes('excellence'))
@@ -145,7 +154,7 @@ test('固化先进遵循量化门槛、AI匹配与质检录音权限',async()=>{
  }finally{await app.close()}
 })
 
-test('经理与总监经营数据严格采用河北10015全年预算和1至6月达成附件',async()=>{
+test('经理与总监经营数据支持河北10015和河北回流附件口径切换',async()=>{
  const app=await startServer()
  try{
   const state=(await app.request('GET','/api/state')).data
@@ -157,6 +166,14 @@ test('经理与总监经营数据严格采用河北10015全年预算和1至6月�
   assert.equal(revenue.budget.slice(0,6).reduce((sum,value)=>sum+value,0),13569466)
   assert.equal(revenue.budget.reduce((sum,value)=>sum+value,0),28232558)
   assert.equal(revenue.actual.reduce((sum,value)=>sum+value,0),12995076)
+  assert.deepEqual(state.financialPerformances.map(item=>item.scope),['河北10015','河北回流'])
+  const reflow=state.financialPerformances.find(item=>item.scope==='河北回流')
+  assert.equal(reflow.sources.budget.fileName,'河北回流_各月预算目标查询表(2026-08-01).xls')
+  assert.equal(reflow.sources.actual.fileName,'北一各月指标查询-河北(2026-08-01).xls')
+  const reflowRevenue=reflow.metrics.find(item=>item.code==='01')
+  assert.equal(reflowRevenue.budget.slice(0,6).reduce((sum,value)=>sum+value,0),9666024)
+  assert.equal(reflowRevenue.budget.reduce((sum,value)=>sum+value,0),20331205)
+  assert.equal(reflowRevenue.actual.reduce((sum,value)=>sum+value,0),9537877)
   assert.equal(state.governance.budgets[0].id,'BG-2026H1-10015')
   assert.equal(state.governance.budgets[0].revenueTarget,1356.95)
   assert.equal(state.governance.budgets[0].forecastRevenue,1299.51)
@@ -365,6 +382,7 @@ test('精益任务支持AI目标建议、跨岗位指派、数据辅助验收和
   const managerSubmitted=await app.request('POST',`/api/tasks/${managerTask.id}/action`,{
    role:'manager',actor:'测试经理',action:'lean_submit',
    evidence:'已完成三通低满意录音复盘，并完成服务四动作校准和两通新录音抽检。',
+   actualValue:97.4,
   })
   assert.equal(managerSubmitted.status,200)
   assert.equal(managerSubmitted.data.tasks.find(item=>item.id===managerTask.id).status,'pending_verification')
@@ -515,8 +533,8 @@ test('精益任务支持AI目标建议、跨岗位指派、数据辅助验收和
   assert.equal(managerRequestCreated.data.tasks[0].verificationRole,'manager')
   assert.equal((await app.request('POST',`/api/tasks/${requestTask.id}/action`,{role:'training',action:'lean_start'})).status,200)
   const requestSubmitted=await app.request('POST',`/api/tasks/${requestTask.id}/action`,{
-   role:'training',action:'lean_submit',actualValue:92,
-   evidence:'已完成续约口径讲解、三类案例演练和通关测试，员工测试得分92分。',
+   role:'training',action:'lean_submit',actualValue:98,
+   evidence:'已完成续约口径讲解、三类案例演练和通关测试，员工测试得分98分。',
   })
   assert.equal(requestSubmitted.status,200)
   assert.equal(requestSubmitted.data.tasks.find(item=>item.id===requestTask.id).ownerRole,'employee')
@@ -527,16 +545,18 @@ test('精益任务支持AI目标建议、跨岗位指派、数据辅助验收和
   })
   assert.equal(requesterClosed.status,200)
   assert.equal(requesterClosed.data.tasks.find(item=>item.id===requestTask.id).status,'closed')
+  assert.ok(requesterClosed.data.excellence.experiences.some(item=>item.sourceTaskId===requestTask.id&&item.status==='candidate'))
  }finally{await app.close()}
 })
 
-test('班组看数按工时、利用率和通话均长拆解产能Gap并支持AI降级',async()=>{
+test('班组看数通过Shapley引擎拆解接听量Gap并支持AI降级',async()=>{
  const app=await startServer()
  try{
   const member={
    jobNo:'JR-ATTR-001',name:'归因测试员工',team:'普通客服一区·8班',
    responses:{actual:86,target:136},cph:{actual:12.29,target:17},
    workHours:{actual:7,target:8},utilization:{actual:75,target:85},
+   talkTime:{actual:190,target:165},afterCall:{actual:20,target:15},
    handleTime:{actual:210,target:180},busyRest:{actual:13.5,target:7},
    sourceImpacts:{workHours:-17,utilization:-14,talkTime:-10,afterCall:-5,busyRest:-6},
   }
@@ -546,11 +566,16 @@ test('班组看数按工时、利用率和通话均长拆解产能Gap并支持AI
   assert.equal(result.data.calculation.responseGap,-50)
   assert.equal(result.data.calculation.formulaTarget,136)
   assert.equal(result.data.calculation.formulaActual,90)
+  assert.equal(result.data.method,'shapley')
+  assert.equal(result.data.engine,'shapley-attribution-v1')
+  assert.equal(result.data.calculation.reconciliationGap,0)
   assert.equal(result.data.drivers.find(item=>item.code==='work_hours').status,'risk')
   assert.equal(result.data.drivers.find(item=>item.code==='utilization').status,'risk')
-  assert.equal(result.data.drivers.find(item=>item.code==='handle_time').status,'risk')
-  assert.match(result.data.conclusion,/首要负向因素为签入工时/)
-  assert.match(result.data.utilizationFormula,/通话总时长/)
+  assert.equal(result.data.drivers.find(item=>item.code==='att').status,'risk')
+  assert.equal(result.data.drivers.find(item=>item.code==='acw').status,'risk')
+  assert.equal(Number(result.data.drivers.reduce((sum,item)=>sum+(item.impactCalls||0),0).toFixed(2)),result.data.calculation.formulaGap)
+  assert.match(result.data.conclusion,/首要负向因素为出勤时长/)
+  assert.match(result.data.formula,/ATT \+ ACW/)
   const forbidden=await app.request('POST','/api/ai/team-attribution',{role:'employee',member})
   assert.equal(forbidden.status,403)
  }finally{await app.close()}
@@ -1185,6 +1210,48 @@ test('主管生产调度与总监经营治理形成跨角色闭环',async()=>{
  }finally{await app.close()}
 })
 
+test('任务删除采用软作废，普通岗位隐藏且经理保留查阅权限',async()=>{
+ const app=await startServer()
+ try{
+  const createdUser=await app.request('PUT','/api/access/users',{user:{name:'作废测试主管',jobNo:'QA-VOID-SUP',roleId:'customer-supervisor',jobTitle:'客服主管',department:'河北基地 · 10015升投 · 前台',status:'active',password:'Temp123!',moduleOverrides:[]}})
+  assert.equal(createdUser.status,200)
+  const supervisorLogin=await app.rawRequest('POST','/api/auth/login',{jobNo:'QA-VOID-SUP',password:'Temp123!'})
+  const supervisorInitialCookie=supervisorLogin.headers.get('set-cookie').split(';')[0]
+  const supervisorChanged=await app.rawRequest('POST','/api/auth/change-password',{currentPassword:'Temp123!',newPassword:'Supervisor2026!'},{cookie:supervisorInitialCookie})
+  const supervisorCookie=supervisorChanged.headers.get('set-cookie').split(';')[0]
+  const managerLogin=await app.rawRequest('POST','/api/auth/login',{jobNo:'JZ001218',password:'000000'})
+  const managerInitialCookie=managerLogin.headers.get('set-cookie').split(';')[0]
+  const managerChanged=await app.rawRequest('POST','/api/auth/change-password',{currentPassword:'000000',newPassword:'Manager2026!'},{cookie:managerInitialCookie})
+  const managerCookie=managerChanged.headers.get('set-cookie').split(';')[0]
+  const plannedStartAt=new Date(Date.now()+60*60*1000).toISOString(),submitDueAt=new Date(Date.now()+24*60*60*1000).toISOString(),verificationDueAt=new Date(Date.now()+48*60*60*1000).toISOString()
+  const created=await app.rawRequest('POST','/api/tasks',{
+   source:'management-directive',role:'supervisor',targetRole:'leader',owner:'王璐璐（班长）',title:'误建任务待作废',issueCategory:'产能效率',issueLocation:'10015升投 · 前台 · 8班',
+   problem:'该任务用于验证软删除和作废归类，不应继续进入岗位执行流程。',target:'验证作废任务不再进入岗位界面',successCriteria:'普通岗位不可见，经理和总监仍可查阅完整记录。',actionPlan:'发起后执行作废操作并核对不同岗位的数据范围。',
+   metricCode:'responses',metricLabel:'人工应答量',metricUnit:'通',metricDirection:'higher',baselineValue:70,targetValue:85,plannedStartAt,submitDueAt,verificationDueAt,
+  },{cookie:supervisorCookie})
+  assert.equal(created.status,201)
+  const task=created.data.tasks.find(item=>item.title==='误建任务待作废')
+  assert.ok(task)
+  const missingReason=await app.rawRequest('POST',`/api/tasks/${task.id}/action`,{role:'supervisor',action:'task_void',comment:'误建'},{cookie:supervisorCookie})
+  assert.equal(missingReason.status,400)
+  const voided=await app.rawRequest('POST',`/api/tasks/${task.id}/action`,{role:'supervisor',action:'task_void',comment:'业务重复建单，本任务确认作废'},{cookie:supervisorCookie})
+  assert.equal(voided.status,200)
+  assert.equal(voided.data.tasks.some(item=>item.id===task.id),false)
+  const supervisorState=await app.rawRequest('GET','/api/state',undefined,{cookie:supervisorCookie})
+  assert.equal(supervisorState.data.tasks.some(item=>item.id===task.id),false)
+  const managerState=await app.rawRequest('GET','/api/state',undefined,{cookie:managerCookie})
+  const retained=managerState.data.tasks.find(item=>item.id===task.id)
+  assert.ok(retained)
+  assert.equal(retained.voidReason,'业务重复建单，本任务确认作废')
+  assert.equal(retained.voidedFromStatus,'todo')
+  assert.equal(retained.status,'todo')
+  assert.match(retained.history.at(-1).action,/任务作废/)
+  const readOnly=await app.rawRequest('POST',`/api/tasks/${task.id}/action`,{role:'manager',action:'task_comment',nodeCode:'P',comment:'尝试修改作废任务'},{cookie:managerCookie})
+  assert.equal(readOnly.status,409)
+  assert.equal(readOnly.data.code,'TASK_ALREADY_VOIDED')
+ }finally{await app.close()}
+})
+
 test('用户角色权限服务持久化、哈希密码并执行服务端RBAC',async()=>{
  const app=await startServer({},false)
  try{
@@ -1483,4 +1550,36 @@ test('AI配置受RBAC保护，行动草案经人工确认进入跨岗位PDCA闭�
   await app.request('POST','/api/reset',{}, {cookie:adminCookie})
   assert.equal((await app.request('GET','/api/ai/status',undefined,{cookie:adminCookie})).data.configured,true)
  }finally{await app.close();await deepseek.close()}
+})
+
+test('业务页面真实建单具备幂等、证据引用、量化门槛和例外关闭',async()=>{
+ const app=await startServer()
+ try{
+  const payload={source:'business-trigger',role:'manager',idempotencyKey:'api-business-trigger-test',sourceLabel:'经理作战台',targetRole:'supervisor',owner:'前台客服主管',title:'普通客服一区满意率改善',problem:'普通客服一区满意率连续低于目标，需要主管组织专项改善并提交证据。',issueCategory:'经营改善',issueLocation:'普通客服一区',target:'满意率提升至95%',successCriteria:'满意率达到95%并提交录音证据。',actionPlan:'复盘低满意录音，辅导班长并每日抽检验证改善。',metricCode:'satisfaction',metricLabel:'满意率',metricUnit:'%',metricDirection:'higher',baselineValue:90,targetValue:95,triggerType:'经营诊断',triggerRule:'满意率低于95%',triggerEvidence:'当前满意率90%，较目标低5个百分点。',dataSource:'经理经营看板'}
+  const created=await app.request('POST','/api/tasks',payload)
+  assert.equal(created.status,201)
+  const task=created.data.tasks.find(item=>item.sourceKey==='business-trigger:api-business-trigger-test')
+  assert.ok(task.trigger.evidence)
+  const duplicate=await app.request('POST','/api/tasks',payload)
+  assert.equal(duplicate.status,200)
+  assert.equal(duplicate.data.tasks.filter(item=>item.sourceKey==='business-trigger:api-business-trigger-test').length,1)
+  assert.equal((await app.request('POST',`/api/tasks/${task.id}/action`,{role:'supervisor',action:'start'})).status,409)
+  assert.equal((await app.request('POST',`/api/tasks/${task.id}/action`,{role:'supervisor',action:'lean_start'})).status,200)
+  const missingActual=await app.request('POST',`/api/tasks/${task.id}/action`,{role:'supervisor',action:'lean_submit',evidence:'已完成录音复盘和班长辅导，提交当日抽检结果。'})
+  assert.equal(missingActual.status,400)
+  const referenced=await app.request('POST',`/api/tasks/${task.id}/attachments`,{role:'supervisor',nodeCode:'submit',referenceType:'录音平台',referenceId:'CALL-20260721-001'})
+  assert.equal(referenced.status,201)
+  assert.equal(referenced.data.tasks.find(item=>item.id===task.id).attachments[0].isReference,true)
+  const submitted=await app.request('POST',`/api/tasks/${task.id}/action`,{role:'supervisor',action:'lean_submit',actualValue:93,evidence:'已完成录音复盘和班长辅导，提交当日抽检结果。'})
+  assert.equal(submitted.status,200)
+  assert.equal((await app.request('POST',`/api/tasks/${task.id}/action`,{role:'manager',action:'lean_verify_success',comment:'抽检结果仍然低于量化目标，不能按普通流程关闭。',standardizedAction:'每日抽检两通录音'})).status,409)
+  const exception=await app.request('POST',`/api/tasks/${task.id}/action`,{role:'manager',action:'lean_exception_request',comment:'受甲方系统切换影响当日样本不足，申请例外关闭并连续三日监控满意率变化。'})
+  assert.equal(exception.status,200)
+  const approved=await app.request('POST',`/api/tasks/${task.id}/action`,{role:'director',action:'lean_exception_approve',decision:'approve',comment:'同意本次按外部系统影响例外关闭，要求经理连续三日复盘并保留监控记录。'})
+  assert.equal(approved.status,200)
+  const closed=approved.data.tasks.find(item=>item.id===task.id)
+  assert.equal(closed.status,'closed')
+  assert.ok(closed.exceptionClosure)
+  assert.equal(Boolean(closed.experienceCandidateId),false)
+ }finally{await app.close()}
 })

@@ -1,12 +1,16 @@
 import { useCallback,useEffect,useMemo,useState } from 'react'
-import { AlertTriangle,CheckCircle2,ChevronRight,Clock3,Database,Download,FileBarChart,ListChecks,Play,RefreshCw,ShieldCheck,Table2 } from './Icons'
-import { reportApi,MorningEmployee,ReportDefinition,ReportDownload,ReportPreview,ReportProject,ReportRun } from '../data/reportApi'
-import { WorkflowTask } from '../data/workflowApi'
+import { AlertTriangle,CheckCircle2,ChevronRight,Clock3,Database,Download,FileBarChart,ListChecks,Play,RefreshCw,Search,ShieldCheck,Table2 } from './Icons'
+import { reportApi,MorningEmployee,ReportDefinition,ReportDownload,ReportPreview,ReportProject,ReportRun,ReportTaskPrefill,RpaAttritionRow,RpaPeopleRow,RpaQualityRow } from '../data/reportApi'
+import { WorkflowMutationResult,WorkflowTask } from '../data/workflowApi'
+import { Role } from '../types'
+import { TaskRequestDialog,TaskRequestPrefill } from './LeanPdcaFeatures'
 
 const formatBytes=(value:number)=>value<1024?`${value} B`:`${(value/1024).toFixed(1)} KB`
 const formatTime=(value:string)=>new Date(value).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'})
 
-export default function ReportsPage({role,actor,notify,workflowTasks,workflowBusy,createPdcaTask}:{role:string;actor:string;notify:(text:string)=>void;workflowTasks:WorkflowTask[];workflowBusy:boolean;createPdcaTask:(employee:MorningEmployee)=>Promise<void>}){
+type WorkflowRunner=(action:()=>Promise<WorkflowMutationResult>,success:string)=>boolean|void|Promise<boolean|void>
+
+export default function ReportsPage({role,actor,notify,workflowTasks,workflowBusy,runWorkflow}:{role:Role;actor:string;notify:(text:string)=>void;workflowTasks:WorkflowTask[];workflowBusy:boolean;runWorkflow:WorkflowRunner}){
  const [projects,setProjects]=useState<ReportProject[]>([])
  const [reports,setReports]=useState<ReportDefinition[]>([])
  const [projectId,setProjectId]=useState('north-center-10015')
@@ -17,6 +21,7 @@ export default function ReportsPage({role,actor,notify,workflowTasks,workflowBus
  const [busy,setBusy]=useState(false)
  const [error,setError]=useState('')
  const [morningFilter,setMorningFilter]=useState('全部')
+ const [taskInitial,setTaskInitial]=useState<TaskRequestPrefill|null>(null)
  const selectedProject=projects.find(item=>item.id===projectId)
  const selectedReport=reports.find(item=>item.id===reportType)
  const latestRun=runs[0]
@@ -28,15 +33,17 @@ export default function ReportsPage({role,actor,notify,workflowTasks,workflowBus
   const next=await reportApi.history(projectId,reportType);setRuns(next.runs);setDownloads(next.downloads.filter(item=>next.runs.some(run=>run.id===item.runId)))
  },[projectId,reportType])
 
- useEffect(()=>{reportApi.catalog().then(data=>{setProjects(data.projects);setReports(data.reports)}).catch(e=>setError(e.message))},[])
+ useEffect(()=>{setBusy(true);setError('');reportApi.catalog(role).then(data=>{setProjects(data.projects);setReports(data.reports);setReportType(data.reports[0]?.id||'operations-daily')}).catch(e=>setError(e.message)).finally(()=>setBusy(false))},[role])
  useEffect(()=>{
+  if(!reports.some(item=>item.id===reportType))return
   setBusy(true);setError('')
-  Promise.all([reportApi.preview(projectId,reportType),reportApi.history(projectId,reportType)]).then(([nextPreview,nextHistory])=>{setPreview(nextPreview);setRuns(nextHistory.runs);setDownloads(nextHistory.downloads.filter(item=>nextHistory.runs.some(run=>run.id===item.runId)))}).catch(e=>setError(e.message)).finally(()=>setBusy(false))
- },[projectId,reportType])
+  Promise.all([reportApi.preview(projectId,reportType,role),reportApi.history(projectId,reportType)]).then(([nextPreview,nextHistory])=>{setPreview(nextPreview);setRuns(nextHistory.runs);setDownloads(nextHistory.downloads.filter(item=>nextHistory.runs.some(run=>run.id===item.runId)))}).catch(e=>setError(e.message)).finally(()=>setBusy(false))
+ },[projectId,reportType,role,reports])
 
  const run=async()=>{setBusy(true);try{await reportApi.run(projectId,reportType,actor,role);await refreshHistory();notify(`${selectedReport?.name}已生成并归档`)}catch(e){notify(e instanceof Error?e.message:'报表运行失败')}finally{setBusy(false)}}
  const download=async(item:ReportRun)=>{try{await reportApi.download(item,actor);window.setTimeout(()=>refreshHistory().catch(()=>{}),200);notify('报表已下载，下载留痕已保存')}catch(e){notify(e instanceof Error?e.message:'下载失败')}}
  const filteredDownloads=useMemo(()=>downloads.slice(0,8),[downloads])
+ const openMorningTask=async(employee:MorningEmployee)=>{setTaskInitial({title:`${employee.name} · ${employee.position}`,targetRole:'leader',owner:`${employee.team}（班长）`,issueCategory:'人员经营改善',issueLocation:`${employee.team} / ${employee.name} ${employee.jobNo}`,problem:employee.reason,target:'完成问题复盘并达到个人指标目标',successCriteria:'系统指标达到个人目标，且提交辅导记录与过程证据。',actionPlan:'班长完成问题复盘、当班辅导和指标跟踪，并在验证节点提交改善结果。',metricCode:'responses',metricLabel:'个人应答量',metricUnit:'通',metricDirection:'higher',baselineValue:Number(employee.metrics.responses||0),targetValue:Number(employee.targets.responseTarget||employee.metrics.responses||0),employeeCode:employee.jobNo,employeeName:employee.name,team:employee.team});}
 
  return <>
   <div className="page-head"><div><span>RPA数字员工 · 报表员</span><h1>从离线样本，到可追溯的报表生产线</h1><p>选择项目和报表，核对来源口径，生成真实CSV文件并保存运行与下载留痕。</p></div><div className="page-actions"><button className="primary" disabled={busy||!preview?.available} title={!preview?.available?'当前项目待配置数据适配器':'生成当前报表'} onClick={run}>{busy?<RefreshCw size={16}/>:<Play size={16}/>}运行当前报表</button></div></div>
@@ -52,7 +59,7 @@ export default function ReportsPage({role,actor,notify,workflowTasks,workflowBus
 
    {preview.available?<>
     <div className="rpa-summary">{preview.summary.map(item=><article className={item.status} key={item.label}><span>{item.label}</span><strong>{item.value}</strong><small>{item.detail}</small></article>)}</div>
-    {reportType==='team-morning-brief'&&preview.briefing&&preview.briefingRows?<MorningBriefingTable preview={preview} rows={morningRows} filter={morningFilter} setFilter={setMorningFilter} formatMetric={formatMorningMetric} metricStatus={morningStatus} workflowTasks={workflowTasks} workflowBusy={workflowBusy} createPdcaTask={createPdcaTask}/>:<div className="rpa-main-grid"><section className="panel rpa-preview"><header><div><span>字段级预览</span><h2>{selectedReport?.name}</h2></div><em>{preview.rows.length} 行样本</em></header><div className="rpa-table-scroll"><table><thead><tr>{preview.columns.map(column=><th key={column}>{column}</th>)}</tr></thead><tbody>{preview.rows.map((row,index)=><tr key={index}>{row.map((cell,cellIndex)=>{const isMode=['离线缓存','样本提取','模拟推演'].includes(cell);return <td key={cellIndex}>{isMode?<span className={`data-mode ${cell==='模拟推演'?'simulated':cell==='样本提取'?'sample':'cached'}`}>{cell}</span>:cell}</td>})}</tr>)}</tbody></table></div></section>
+    {preview.roleView?<RoleReportView preview={preview} tasks={workflowTasks} busy={workflowBusy} openTask={task=>setTaskInitial(task)}/>:reportType==='team-morning-brief'&&preview.briefing&&preview.briefingRows?<MorningBriefingTable preview={preview} rows={morningRows} filter={morningFilter} setFilter={setMorningFilter} formatMetric={formatMorningMetric} metricStatus={morningStatus} workflowTasks={workflowTasks} workflowBusy={workflowBusy} createPdcaTask={openMorningTask}/>:<div className="rpa-main-grid"><section className="panel rpa-preview"><header><div><span>字段级预览</span><h2>{selectedReport?.name}</h2></div><em>{preview.rows.length} 行样本</em></header><div className="rpa-table-scroll"><table><thead><tr>{preview.columns.map(column=><th key={column}>{column}</th>)}</tr></thead><tbody>{preview.rows.map((row,index)=><tr key={index}>{row.map((cell,cellIndex)=>{const isMode=['离线缓存','样本提取','模拟推演'].includes(cell);return <td key={cellIndex}>{isMode?<span className={`data-mode ${cell==='模拟推演'?'simulated':cell==='样本提取'?'sample':'cached'}`}>{cell}</span>:cell}</td>})}</tr>)}</tbody></table></div></section>
      <section className="panel rpa-production"><header><div><span>报表生产线</span><h2>{latestRun?'最近一次运行':'等待首次运行'}</h2></div>{latestRun&&<em><CheckCircle2 size={14}/>已归档</em>}</header><div className="production-steps">{['来源快照','口径校验','表格生成','留痕归档'].map((step,index)=><div className={latestRun?'done':index===0?'ready':''} key={step}><b>{index+1}</b><span>{step}</span>{index<3&&<i/>}</div>)}</div>{latestRun?<div className="run-metrics"><div><span>输出行数</span><strong>{latestRun.metrics.outputRows}</strong></div><div><span>引用工作表</span><strong>{latestRun.metrics.sourceSheetsReferenced}</strong></div><div><span>生成耗时</span><strong>{latestRun.metrics.durationMs}ms</strong></div><div><span>文件大小</span><strong>{formatBytes(latestRun.metrics.artifactBytes)}</strong></div><div><span>质量提示</span><strong>{latestRun.warningCount}</strong></div><div><span>下载次数</span><strong>{latestRun.downloadCount}</strong></div></div>:<div className="production-empty"><Table2 size={30}/><p>核对左侧来源和指标后，运行当前报表。</p></div>}</section></div>}
    </>:<div className="rpa-template-empty"><ShieldCheck size={34}/><h2>报表模板已经准备好</h2><p>{preview.columns.join(' · ')}</p><span>配置项目数据适配器后即可复用10015相同的预览、生成、下载和审计链路。</span></div>}
   </>}
@@ -60,7 +67,50 @@ export default function ReportsPage({role,actor,notify,workflowTasks,workflowBus
   <section className="panel rpa-history"><header><div><span>持久化记录</span><h2>运行与下载留痕</h2></div><button onClick={()=>refreshHistory()}><RefreshCw size={14}/>刷新记录</button></header>{runs.length?<><div className="rpa-run-head"><span>报表</span><span>运行时间</span><span>发起人</span><span>输出</span><span>下载</span><span>操作</span></div>{runs.slice(0,8).map(item=><div className="rpa-run-row" key={item.id}><div><strong>{item.reportName}</strong><small>{item.id}</small></div><span>{formatTime(item.completedAt)}</span><span>{item.requestedBy}</span><span>{item.metrics.outputRows}行 · {formatBytes(item.metrics.artifactBytes)}</span><span>{item.downloadCount}次</span><button onClick={()=>download(item)}><Download size={14}/>下载 CSV</button></div>)}</>:<div className="rpa-history-empty">当前项目与报表还没有运行记录。</div>}
    {filteredDownloads.length>0&&<div className="download-trace"><strong>最近下载留痕</strong>{filteredDownloads.map(item=><span key={item.id}><Download size={12}/>{formatTime(item.downloadedAt)} · {item.requestedBy} · {item.runId.slice(0,15)}…</span>)}</div>}
   </section>
+  {taskInitial && (
+   <TaskRequestDialog role={role} busy={workflowBusy} run={runWorkflow} notify={notify} close={()=>setTaskInitial(null)} initial={taskInitial}/>
+  )}
  </>
+}
+
+function RoleReportView({preview,tasks,busy,openTask}:{preview:ReportPreview;tasks:WorkflowTask[];busy:boolean;openTask:(task:ReportTaskPrefill)=>void}){
+ const view=preview.roleView!
+ return <section className="rpa-role-report">
+  <header className="rpa-scope-head"><div><span>当前数据权限</span><h2>{view.scopeLabel}</h2><p>{view.scopePolicy}</p></div><em><ShieldCheck size={15}/>服务端按岗位收口</em></header>
+  {view.kind==='people' && (
+   <PeopleReport rows={view.peopleRows||[]} tasks={tasks} busy={busy} openTask={openTask}/>
+  )}
+  {view.kind==='quality' && (
+   <QualityReport rows={view.qualityRows||[]} tasks={tasks} busy={busy} openTask={openTask}/>
+  )}
+  {view.kind==='attrition' && (
+   <AttritionReport rows={view.attritionRows||[]} tasks={tasks} busy={busy} openTask={openTask}/>
+  )}
+ </section>
+}
+
+const relatedTask=(tasks:WorkflowTask[],jobNo:string,name:string)=>tasks.some(task=>task.status!=='closed'&&(task.employeeId===jobNo||task.person===name))
+const percent=(value:number)=>value==null||!Number.isFinite(Number(value))?'—':`${(Number(value)*100).toFixed(1)}%`
+const figure=(value:number)=>value==null||!Number.isFinite(Number(value))?'—':Number(value).toLocaleString('zh-CN',{maximumFractionDigits:1})
+
+function PeopleReport({rows,tasks,busy,openTask}:{rows:RpaPeopleRow[];tasks:WorkflowTask[];busy:boolean;openTask:(task:ReportTaskPrefill)=>void}){
+ const [filter,setFilter]=useState('全部')
+ const [keyword,setKeyword]=useState('')
+ const visible=rows.filter(item=>(filter==='全部'||item.status===filter)&&(!keyword.trim()||[item.name,item.jobNo,item.team,item.stage].join(' ').includes(keyword.trim())))
+ return <div className="panel rpa-role-panel"><div className="rpa-role-tools"><div>{['全部','达标标杆','重点追回','质量关注','目标待配'].map(item=><button key={item} className={filter===item?'active':''} onClick={()=>setFilter(item)}>{item}<b>{item==='全部'?rows.length:rows.filter(row=>row.status===item).length}</b></button>)}</div><label><Search size={14}/><input value={keyword} onChange={event=>setKeyword(event.target.value)} placeholder="搜索员工、工号、班组"/></label></div><div className="rpa-role-table-wrap"><table className="rpa-role-table people"><thead><tr><th>状态</th><th>员工 / 班组</th><th>月截止产能</th><th>产能GAP</th><th>ATT</th><th>利用率</th><th>置忙小休</th><th>满意率</th><th>追回计划</th><th>PDCA任务</th></tr></thead><tbody>{visible.map(item=>{const hasTask=relatedTask(tasks,item.jobNo,item.name);return <tr key={item.jobNo}><td><span className={`rpa-row-status ${item.status==='达标标杆'?'met':item.status==='重点追回'?'risk':item.status==='目标待配'?'normal':'watch'}`}>{item.status}</span></td><td><strong>{item.name}</strong><small>{item.team} · {item.jobNo} · {item.stage}</small></td><td><strong>{figure(item.monthlyActual)}</strong><small>目标 {figure(item.monthlyTarget)} · {percent(item.attainment)}</small></td><td className={item.productionGap==null?'':item.productionGap<0?'negative':'positive'}>{item.productionGap!=null&&item.productionGap>0?'+':''}{figure(item.productionGap)}<small>签入{figure(item.signinImpact)} / ATT{figure(item.attImpact)} / 置忙{figure(item.busyImpact)}</small></td><td>{figure(item.att)}s</td><td>{percent(item.utilization)}</td><td>{percent(item.busyRest)}</td><td className={item.satisfactionActual<item.satisfactionTarget?'negative':'positive'}>{percent(item.satisfactionActual)}<small>目标 {percent(item.satisfactionTarget)}</small></td><td><strong>{figure(item.recoveryDaily)}通/日</strong><small>追回后 {percent(item.recoveryAttainment)}</small></td><td><button disabled={busy} className={hasTask?'has-task':''} onClick={()=>openTask(item.task)}><ListChecks size={13}/>{hasTask?'继续创建':'创建任务单'}</button></td></tr>})}</tbody></table></div></div>
+}
+
+function QualityReport({rows,tasks,busy,openTask}:{rows:RpaQualityRow[];tasks:WorkflowTask[];busy:boolean;openTask:(task:ReportTaskPrefill)=>void}){
+ const [filter,setFilter]=useState('全部')
+ const visible=filter==='全部'?rows:rows.filter(item=>item.responsibility===filter)
+ return <div className="panel rpa-role-panel"><div className="rpa-role-tools"><div>{['全部','红线','底线','普通差错'].map(item=><button key={item} className={filter===item?'active':''} onClick={()=>setFilter(item)}>{item}<b>{item==='全部'?rows.length:rows.filter(row=>row.responsibility===item).length}</b></button>)}</div><span className="rpa-quality-note"><ShieldCheck size={14}/>质检发起、责任班长整改、质检复验</span></div><div className="rpa-role-table-wrap"><table className="rpa-role-table quality"><thead><tr><th>等级</th><th>员工 / 班组</th><th>听音日期</th><th>省分 / 队列</th><th>质量问题与录音点评</th><th>扣款</th><th>接触记录</th><th>PDCA任务</th></tr></thead><tbody>{visible.map(item=>{const hasTask=relatedTask(tasks,item.jobNo,item.name);return <tr key={`${item.sourceRow}-${item.jobNo}`}><td><span className={`rpa-row-status ${item.responsibility==='红线'?'risk':item.responsibility==='底线'?'watch':'normal'}`}>{item.responsibility}</span></td><td><strong>{item.name}</strong><small>{item.team}班组 · {item.jobNo}</small></td><td>{String(item.listenDate||'—')}</td><td><strong>{item.province}</strong><small>{item.queue}</small></td><td className="rpa-long-cell"><p>{item.comment||'待补充质检点评'}</p><small>{item.scene||item.problemType||'服务规范'}</small></td><td className="negative">{figure(item.deduction)}元</td><td><code>{item.contactId||'—'}</code></td><td><button disabled={busy} className={hasTask?'has-task':''} onClick={()=>openTask(item.task)}><ListChecks size={13}/>{hasTask?'继续创建':'创建任务单'}</button></td></tr>})}</tbody></table></div></div>
+}
+
+function AttritionReport({rows,tasks,busy,openTask}:{rows:RpaAttritionRow[];tasks:WorkflowTask[];busy:boolean;openTask:(task:ReportTaskPrefill)=>void}){
+ const reasons=Array.from(new Set(rows.map(item=>item.reason)))
+ const [reason,setReason]=useState('全部原因')
+ const visible=reason==='全部原因'?rows:rows.filter(item=>item.reason===reason)
+ return <div className="panel rpa-role-panel"><div className="rpa-role-tools attrition"><div className="rpa-cause-tags"><button className={reason==='全部原因'?'active':''} onClick={()=>setReason('全部原因')}>全部原因<b>{rows.length}</b></button>{reasons.slice(0,6).map(item=><button className={reason===item?'active':''} key={item} onClick={()=>setReason(item)}>{item}<b>{rows.filter(row=>row.reason===item).length}</b></button>)}</div><span className="rpa-quality-note"><AlertTriangle size={14}/>从离职结果反推同团队、同阶段预防动作</span></div><div className="rpa-role-table-wrap"><table className="rpa-role-table attrition"><thead><tr><th>离职员工</th><th>离职日期</th><th>人员阶段</th><th>部门 / 班组</th><th>流失原因</th><th>入职日期</th><th>主管 / 经理</th><th>PDCA任务</th></tr></thead><tbody>{visible.map(item=>{const hasTask=relatedTask(tasks,item.jobNo,item.name);return <tr key={`${item.sourceRow}-${item.jobNo}`}><td><strong>{item.name}</strong><small>{item.jobNo} · {item.position}</small></td><td>{item.leaveDate}</td><td><span className={`rpa-stage ${String(item.stage).includes('正式')?'formal':'early'}`}>{item.stage}</span></td><td><strong>{item.department}</strong><small>{item.team}</small></td><td className="rpa-long-cell"><p>{item.reason}</p><small>{item.channel} · {item.channelName}</small></td><td>{item.hireDate}</td><td><strong>{item.supervisor}</strong><small>经理 {item.manager}</small></td><td><button disabled={busy} className={hasTask?'has-task':''} onClick={()=>openTask(item.task)}><ListChecks size={13}/>{hasTask?'继续创建':'创建任务单'}</button></td></tr>})}</tbody></table></div></div>
 }
 
 function MorningBriefingTable({preview,rows,filter,setFilter,formatMetric,metricStatus,workflowTasks,workflowBusy,createPdcaTask}:{preview:ReportPreview;rows:NonNullable<ReportPreview['briefingRows']>;filter:string;setFilter:(value:string)=>void;formatMetric:(value:number|string|null|undefined,format:string)=>string;metricStatus:(value:number|string|null|undefined,target:number|string|null|undefined,direction:'higher'|'lower')=>string|null;workflowTasks:WorkflowTask[];workflowBusy:boolean;createPdcaTask:(employee:MorningEmployee)=>Promise<void>}){

@@ -59,13 +59,15 @@ const syncTasks=async(connection,state)=>{
   ])
   await connection.query(`
    INSERT INTO platform_pdca_control
-    (task_id,archived_at,archived_by,archive_note,next_follow_up_at,last_follow_up_at,intervention_count,intervention_requirement,reopen_count)
-   VALUES (?,?,?,?,?,?,?,?,?)
+    (task_id,archived_at,archived_by,archive_note,voided_at,voided_by,voided_by_role,void_reason,voided_from_status,next_follow_up_at,last_follow_up_at,intervention_count,intervention_requirement,reopen_count)
+   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
    ON DUPLICATE KEY UPDATE archived_at=VALUES(archived_at),archived_by=VALUES(archived_by),
-    archive_note=VALUES(archive_note),next_follow_up_at=VALUES(next_follow_up_at),
+    archive_note=VALUES(archive_note),voided_at=VALUES(voided_at),voided_by=VALUES(voided_by),voided_by_role=VALUES(voided_by_role),
+    void_reason=VALUES(void_reason),voided_from_status=VALUES(voided_from_status),next_follow_up_at=VALUES(next_follow_up_at),
     last_follow_up_at=VALUES(last_follow_up_at),intervention_count=VALUES(intervention_count),
     intervention_requirement=VALUES(intervention_requirement),reopen_count=VALUES(reopen_count)`,[
    task.id,date(task.archivedAt),nullable(text(task.archivedBy||'',128)),nullable(task.archiveNote),
+   date(task.voidedAt),nullable(text(task.voidedBy||'',128)),nullable(text(task.voidedByRole||'',32)),nullable(task.voidReason),nullable(text(task.voidedFromStatus||'',32)),
    date(task.nextFollowUpAt),date(task.lastFollowUpAt),Number(task.interventionCount||0),nullable(task.interventionRequirement),Number(task.reopenCount||0),
   ])
   for(const record of task.managementRecords||[]){

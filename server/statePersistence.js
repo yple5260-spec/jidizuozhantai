@@ -44,6 +44,18 @@ const loadPersistedNotifications=async()=>{
   priority:item.priority||'normal',createdAt:new Date(item.createdAt).toISOString(),read:false,
  }))
 }
+const reloadRuntimeSnapshot=async()=>{
+ if(!databaseMode)return
+ const rows=await databaseQuery('SELECT payload_json,revision FROM platform_state_snapshot WHERE snapshot_key=?',[snapshotKey])
+ if(!rows.length)return
+ const payload=typeof rows[0].payload_json==='string'?JSON.parse(rows[0].payload_json):rows[0].payload_json
+ const normalized=capRuntimeRecords(normalizeLeanState(normalizeState({...payload,notifications:await loadPersistedNotifications(),audit:[]})))
+ runtimeRevision=Number(rows[0].revision||1);runtimeState=withRevision(normalized,runtimeRevision)
+}
+const revisionConflict=async message=>{
+ await reloadRuntimeSnapshot()
+ return Object.assign(new Error(message),{status:409,code:'STATE_REVISION_CONFLICT',retryable:true})
+}
 
 export const initializeStatePersistence=async()=>{
  if(!databaseConfigured()){
@@ -95,16 +107,16 @@ export const saveState=async state=>{
   return loadState()
  }
  const expected=Number(state.persistenceRevision||runtimeRevision)
- if(expected!==runtimeRevision)throw Object.assign(new Error('业务状态已被其他操作更新，请刷新后重试'),{status:409,code:'STATE_REVISION_CONFLICT'})
+ if(expected!==runtimeRevision)throw await revisionConflict('业务状态已被其他操作更新，服务已自动同步，请重试')
  const nextRevision=runtimeRevision+1
  await databaseTransaction(async connection=>{
   const [result]=await connection.query(
    'UPDATE platform_state_snapshot SET payload_json=?,revision=? WHERE snapshot_key=? AND revision=?',
    [JSON.stringify(cleanForSnapshot(clean)),nextRevision,snapshotKey,runtimeRevision],
   )
-  if(result.affectedRows!==1)throw Object.assign(new Error('业务状态版本冲突，请刷新后重试'),{status:409,code:'STATE_REVISION_CONFLICT'})
+  if(result.affectedRows!==1)throw Object.assign(new Error('业务状态版本冲突'),{status:409,code:'STATE_REVISION_CONFLICT'})
   await syncBusinessStateWithConnection(connection,clean)
- })
+ }).catch(async error=>{if(error.code==='STATE_REVISION_CONFLICT')throw await revisionConflict('业务状态版本冲突，服务已自动同步，请重试');throw error})
  runtimeRevision=nextRevision
  runtimeState=withRevision(clean,runtimeRevision)
  return loadState()
@@ -118,7 +130,7 @@ export const saveTaskActionState=async(state,actionContext)=>{
   return loadState()
  }
  const expected=Number(state.persistenceRevision||runtimeRevision)
- if(expected!==runtimeRevision)throw Object.assign(new Error('业务状态已被其他操作更新，请刷新后重试'),{status:409,code:'STATE_REVISION_CONFLICT'})
+ if(expected!==runtimeRevision)throw await revisionConflict('业务状态已被其他操作更新，服务已自动同步，请重试')
  const nextRevision=runtimeRevision+1
  const task=clean.tasks?.find(item=>item.id===actionContext.taskId)
  if(!task)throw Object.assign(new Error('待保存任务不存在'),{status:404,code:'TASK_NOT_FOUND'})
@@ -127,7 +139,7 @@ export const saveTaskActionState=async(state,actionContext)=>{
    'UPDATE platform_state_snapshot SET payload_json=?,revision=? WHERE snapshot_key=? AND revision=?',
    [JSON.stringify(cleanForSnapshot(clean)),nextRevision,snapshotKey,runtimeRevision],
   )
-  if(result.affectedRows!==1)throw Object.assign(new Error('业务状态版本冲突，请刷新后重试'),{status:409,code:'STATE_REVISION_CONFLICT'})
+  if(result.affectedRows!==1)throw Object.assign(new Error('业务状态版本冲突'),{status:409,code:'STATE_REVISION_CONFLICT'})
   await persistTaskActionCoreWithConnection(connection,{
    task,
    beforeTask:actionContext.beforeTask,
@@ -138,7 +150,7 @@ export const saveTaskActionState=async(state,actionContext)=>{
    action:actionContext.action,
    stateRevision:nextRevision,
   })
- })
+ }).catch(async error=>{if(error.code==='STATE_REVISION_CONFLICT')throw await revisionConflict('业务状态版本冲突，服务已自动同步，请重试');throw error})
  runtimeRevision=nextRevision
  runtimeState=withRevision(clean,runtimeRevision)
  nudgeTaskOutbox()
@@ -153,15 +165,15 @@ export const saveSnapshotOnlyState=async state=>{
   return loadState()
  }
  const expected=Number(state.persistenceRevision||runtimeRevision)
- if(expected!==runtimeRevision)throw Object.assign(new Error('业务状态已被其他操作更新，请刷新后重试'),{status:409,code:'STATE_REVISION_CONFLICT'})
+ if(expected!==runtimeRevision)throw await revisionConflict('业务状态已被其他操作更新，服务已自动同步，请重试')
  const nextRevision=runtimeRevision+1
  await databaseTransaction(async connection=>{
   const [result]=await connection.query(
    'UPDATE platform_state_snapshot SET payload_json=?,revision=? WHERE snapshot_key=? AND revision=?',
    [JSON.stringify(cleanForSnapshot(clean)),nextRevision,snapshotKey,runtimeRevision],
   )
-  if(result.affectedRows!==1)throw Object.assign(new Error('业务状态版本冲突，请刷新后重试'),{status:409,code:'STATE_REVISION_CONFLICT'})
- })
+  if(result.affectedRows!==1)throw Object.assign(new Error('业务状态版本冲突'),{status:409,code:'STATE_REVISION_CONFLICT'})
+ }).catch(async error=>{if(error.code==='STATE_REVISION_CONFLICT')throw await revisionConflict('业务状态版本冲突，服务已自动同步，请重试');throw error})
  runtimeRevision=nextRevision
  runtimeState=withRevision(clean,runtimeRevision)
  return loadState()

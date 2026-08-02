@@ -1,4 +1,5 @@
 import { databaseQuery } from './database.js'
+import { applyOrganizationScope } from './organizationScope.js'
 
 const SOURCE_SCHEMA=String(process.env.DATA_SOURCE_SCHEMA||'ai_hack_s2').trim()
 if(!/^[A-Za-z0-9_]+$/.test(SOURCE_SCHEMA))throw new Error('DATA_SOURCE_SCHEMA仅允许字母、数字和下划线')
@@ -46,6 +47,7 @@ const latestTeamRows=async()=>{
    twoxscfldl_rdc AS repeatCall,twoxscfldl_rmb AS repeatCallTarget,
    QRSC_rdc AS workHours,QRSC_rmb AS workHoursTarget,
    THLYL_rdc AS utilization,THLYL_rmb AS utilizationTarget,
+   ATT_rdc AS talkTime,ATT_rmb AS talkTimeTarget,ACW_rdc AS afterCall,ACW_rmb AS afterCallTarget,
    AHT_rdc AS handleTime,AHT_rmb AS handleTimeTarget,
    thzsc_r AS talkSeconds,zt_gzzsz_rdc AS totalWorkSeconds,
    QRSC_yxcn_r AS workHoursImpact,THLYL_yxcn_r AS utilizationImpact,
@@ -55,8 +57,7 @@ const latestTeamRows=async()=>{
   FROM ${SOURCE_SCHEMA}.bpo_dws_base_pord_sum
   WHERE sjjzrq=(SELECT MAX(sjjzrq) FROM ${SOURCE_SCHEMA}.bpo_dws_base_pord_sum)
    AND jzgh IS NOT NULL AND xm IS NOT NULL AND COALESCE(jzgh,'')<>COALESCE(BZ_jrgh,'')
-  ORDER BY COALESCE(YDL_rdc,0) DESC
-  LIMIT 80`)
+  ORDER BY COALESCE(YDL_rdc,0) DESC`)
  return rows.map(row=>{
   const responses=number(row.responses),responseTarget=number(row.responseTarget)
   const cph=number(row.cph),cphTarget=number(row.cphTarget)
@@ -70,8 +71,11 @@ const latestTeamRows=async()=>{
   const utilizationTarget=percentValue(row.utilizationTarget)
   const workHours=number(row.workHours)??(totalWorkSeconds==null?null:totalWorkSeconds/3600)
   const workHoursTarget=number(row.workHoursTarget)
-  const handleTime=number(row.handleTime),handleTimeTarget=number(row.handleTimeTarget)
-  const calculatedResponses=(hours,rate,seconds)=>hours!=null&&rate!=null&&seconds?round(hours*3600*(rate/100)/seconds,2):null
+  const talkTime=number(row.talkTime),talkTimeTarget=number(row.talkTimeTarget)
+  const afterCall=number(row.afterCall),afterCallTarget=number(row.afterCallTarget)
+  const handleTime=number(row.handleTime)??(talkTime!=null&&afterCall!=null?talkTime+afterCall:null)
+  const handleTimeTarget=number(row.handleTimeTarget)??(talkTimeTarget!=null&&afterCallTarget!=null?talkTimeTarget+afterCallTarget:null)
+  const calculatedResponses=(hours,rate,att,acw)=>hours!=null&&rate!=null&&att!=null&&acw!=null&&att+acw>0?round(hours*3600*(rate/100)/(att+acw),2):null
   const attention=[
    targetStatus(responses,responseTarget),
    targetStatus(cph,cphTarget),
@@ -93,14 +97,16 @@ const latestTeamRows=async()=>{
    repeatCall:metric('2小时重复来电率',repeatCall,repeatCallTarget,'%','lower'),
    },
    productivityDrivers:{
-    formula:'目标产能 = 目标工时 × 目标员工利用率 ÷ 目标通话均长',
-    workHours:metric('签入工时',workHours,workHoursTarget,'h'),
-    utilization:metric('员工利用率',utilization,utilizationTarget,'%'),
+    formula:'接听量 = 出勤时长 × 通话可利用率 × 3600 ÷（ATT + ACW）',
+    workHours:metric('出勤时长',workHours,workHoursTarget,'h'),
+    utilization:metric('通话可利用率',utilization,utilizationTarget,'%'),
+    talkTime:metric('ATT',talkTime,talkTimeTarget,'s','lower'),
+    afterCall:metric('ACW',afterCall,afterCallTarget,'s','lower'),
     handleTime:metric('通话均长',handleTime,handleTimeTarget,'s','lower'),
     busyRest:metric('示忙小休率',busyRest,busyRestTarget,'%','lower'),
     talkSeconds:round(talkSeconds,0),totalWorkSeconds:round(totalWorkSeconds,0),
-    calculatedActualResponses:calculatedResponses(workHours,utilization,handleTime),
-    calculatedTargetResponses:calculatedResponses(workHoursTarget,utilizationTarget,handleTimeTarget),
+    calculatedActualResponses:calculatedResponses(workHours,utilization,talkTime,afterCall),
+    calculatedTargetResponses:calculatedResponses(workHoursTarget,utilizationTarget,talkTimeTarget,afterCallTarget),
     sourceImpacts:{
      workHours:round(number(row.workHoursImpact)),utilization:round(number(row.utilizationImpact)),
      talkTime:round(number(row.talkTimeImpact)),afterCall:round(number(row.afterCallImpact)),busyRest:round(number(row.busyRestImpact)),
@@ -261,32 +267,36 @@ const loadShared=async()=>{
  return value
 }
 
-export const getRealData=async({role,jobNo,name})=>{
+const groupTeam=team=>Object.values(team.reduce((groups,item)=>{
+ const group=groups[item.team]||{team:item.team,total:0,met:0,attention:0,potential:0,focus:0}
+ group.total+=1
+ const attention=Object.values(item.metrics).filter(value=>value.status==='attention').length
+ if(attention===0)group.met+=1
+ if(attention>0)group.attention+=1
+ if(item.flags.potential)group.potential+=1
+ if(item.flags.focus)group.focus+=1
+ groups[item.team]=group
+ return groups
+},{}))
+
+export const getRealData=async({role,jobNo,name,isSystemAdmin=false})=>{
  const shared=await loadShared()
- const matchedTeam=shared.team.find(item=>item.jobNo===jobNo||item.name===name)
- const representative=matchedTeam||shared.team.find(item=>item.metrics.responses.actual>0)||shared.team[0]||null
+ const scoped=applyOrganizationScope(shared.team,{role,jobNo,name,isSystemAdmin})
+ const visibleTeam=scoped.rows
+ const matchedTeam=visibleTeam.find(item=>item.jobNo===jobNo||item.name===name)
+ const representative=matchedTeam||visibleTeam.find(item=>item.metrics.responses.actual>0)||visibleTeam[0]||null
  const matchedSalary=shared.salary.people.find(item=>item.jobNo===jobNo||item.name===name)
  const representativeSalary=matchedSalary||shared.salary.people[0]||null
- const teamGroups=Object.values(shared.team.reduce((groups,item)=>{
-  const group=groups[item.team]||{team:item.team,total:0,met:0,attention:0,potential:0,focus:0}
-  group.total+=1
-  const attention=Object.values(item.metrics).filter(value=>value.status==='attention').length
-  if(attention===0)group.met+=1
-  if(attention>0)group.attention+=1
-  if(item.flags.potential)group.potential+=1
-  if(item.flags.focus)group.focus+=1
-  groups[item.team]=group
-  return groups
- },{}))
+ const teamGroups=groupTeam(visibleTeam)
  const dates={productivity:representative?.dataDate||'',attendance:shared.attendance.dataDate,ehr:shared.hrbp.dataMonth,salary:shared.salary.period}
  return {
-  meta:dataScope(dates),
-  team:{members:shared.team.slice(0,30),groups:teamGroups.slice(0,12),marketing:shared.marketing},
+  meta:{...dataScope(dates),scope:scoped.scope,contractVersion:'team-view.v3',metricCatalogVersion:'2026.08.01',quality:{completeRows:visibleTeam.filter(item=>Object.values(item.metrics).every(metric=>metric.actual!=null&&metric.target!=null)).length,totalRows:visibleTeam.length}},
+  team:{members:visibleTeam,groups:teamGroups,marketing:shared.marketing},
   employee:representative?{matched:Boolean(matchedTeam),profile:representative,salary:representativeSalary,requestedJobNo:jobNo}:null,
   morning:{
    date:representative?.dataDate||'',
-   praise:shared.team.filter(item=>item.flags.potential).slice(0,5),
-   focus:shared.team.filter(item=>item.flags.focus).slice(0,5),
+   praise:visibleTeam.filter(item=>item.flags.potential).slice(0,5),
+   focus:visibleTeam.filter(item=>item.flags.focus).slice(0,5),
    metrics:representative?Object.values(representative.metrics):[],
    marketing:shared.marketing,
   },
@@ -301,6 +311,14 @@ export const getRealData=async({role,jobNo,name})=>{
      :{period:shared.salary.period,personal:null,matched:false,distribution:[],projects:[],team:[]},
  }
 }
+
+export const getScopedTeamMember=async({role,jobNo,name,isSystemAdmin=false,employeeCode})=>{
+ const shared=await loadShared()
+ const scoped=applyOrganizationScope(shared.team,{role,jobNo,name,isSystemAdmin})
+ return {member:scoped.rows.find(item=>item.jobNo===employeeCode)||null,scope:scoped.scope}
+}
+
+export const clearRealDataCache=()=>{cache={expiresAt:0,value:null}}
 
 const taskMetricColumns={
  satisfaction:'RGFWMYL_RDC',

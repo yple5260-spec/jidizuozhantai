@@ -35,6 +35,6 @@ export const workflowTaskToTaskItem = (task:WorkflowTask):TaskItem => ({
 })
 
 export const workflowAlerts = (state:WorkflowState|null) => state?.events.map(workflowEventToAlert) ?? []
-export const workflowTasks = (state:WorkflowState|null) => state?.tasks.map(workflowTaskToTaskItem) ?? []
+export const workflowTasks = (state:WorkflowState|null) => state?.tasks.filter(task=>!task.voidedAt).map(workflowTaskToTaskItem) ?? []
 export const pendingWorkflowEventCount = (state:WorkflowState|null) => state?.events.filter(event=>event.status==='pending_supervisor_review').length ?? 0
-export const openWorkflowTaskCount = (state:WorkflowState|null,role?:string) => state?.tasks.filter(task=>task.status!=='closed'&&(!role||task.ownerRole===role)).length ?? 0
+export const openWorkflowTaskCount = (state:WorkflowState|null,role?:string) => state?.tasks.filter(task=>!task.voidedAt&&task.status!=='closed'&&(!role||task.ownerRole===role)).length ?? 0

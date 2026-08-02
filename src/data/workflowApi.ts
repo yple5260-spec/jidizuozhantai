@@ -1,5 +1,5 @@
 export type WorkflowEventStatus = 'pending_supervisor_review' | 'approved' | 'rejected' | 'closed'
-export type WorkflowTaskStatus = 'todo' | 'doing' | 'pending_verification' | 'closed' | 'escalated' | 'executive_escalated' | 'returned_to_supervisor' | 'returned_to_leader' | 'returned_to_origin'
+export type WorkflowTaskStatus = 'todo' | 'doing' | 'pending_verification' | 'exception_pending' | 'closed' | 'escalated' | 'executive_escalated' | 'returned_to_supervisor' | 'returned_to_leader' | 'returned_to_origin'
 
 export interface WorkflowEvent {
   id:string; type:string; severity:'critical'|'warning'; title:string; team:string; person?:string
@@ -19,7 +19,14 @@ export interface WorkflowTask {
   problem?:string;issueCategory?:string;issueLocation?:string;actionPlan?:string
   plannedStartAt?:string;submitDueAt?:string;verificationDueAt?:string;startedAt?:string;submittedAt?:string;verifiedAt?:string;closedAt?:string
   standardizedAction?:string
+  schemaVersion?:number;templateKind?:string;remediationRound?:number;experienceCandidateId?:string;experienceAppliedId?:string
+  trigger?:{type:string;rule:string;sourceObjectId:string;sourceLink:string;source:string;evidence:string;baselineDate:string;triggeredAt:string}
+  evidencePolicy?:{requiredAttachments:number;requiredTypes:string[];description:string}
+  slaPolicy?:{enabled:boolean;remindHours:number[];escalateAfterMinutes:number;migrationPending?:boolean};slaEvents?:{key:string;at:string}[];slaEscalatedAt?:string;slaEscalationRole?:string
+  exceptionRequest?:{requestedBy:string;requestedRole:string;reason:string;requestedAt:string;gate:Record<string,unknown>}
+  exceptionClosure?:{approvedBy:string;approvedRole:string;reason:string;decision:string;approvedAt:string}
  archivedAt?:string;archivedBy?:string;archiveNote?:string;nextFollowUpAt?:string;lastFollowUpAt?:string
+ voidedAt?:string;voidedBy?:string;voidedByRole?:string;voidReason?:string;voidedFromStatus?:string
  interventionCount?:number;reopenCount?:number;interventionRequirement?:string
  slaStatus?:'not_applicable'|'archived'|'closed'|'follow_up_due'|'overdue_verification'|'overdue_execution'|'due_soon'|'on_track';slaDeadline?:string
   managementRecords?:{
@@ -28,8 +35,9 @@ export interface WorkflowTask {
    before?:Record<string,string>;after?:Record<string,string>
   }[]
   metric?:{code:string;label:string;baseline:number|null;target:number|null;unit:string;direction:'higher'|'lower'}
+  metricSet?:{code:string;label:string;baseline:number|null;target:number|null;unit:string;direction:'higher'|'lower';required:boolean}[]
   nodes?:{id:string;code:string;name:string;target:string;ownerRole:string;owner:string;plannedAt:string;completedAt:string;status:'pending'|'active'|'completed';sequence:number;result:string;completedBy?:string;completedByRole?:string}[]
-  attachments?:{id:string;taskId:string;nodeCode:string;fileName:string;mimeType:string;fileSize:number;uploadedBy:string;uploadedRole:string;createdAt:string}[]
+  attachments?:{id:string;taskId:string;nodeCode:string;fileName:string;mimeType:string;fileSize:number;uploadedBy:string;uploadedRole:string;createdAt:string;isReference?:boolean;referenceType?:string;referenceId?:string}[]
   metricSnapshots?:{id:string;metricCode:string;metricLabel:string;actual:number|null;target:number|null;unit:string;direction:'higher'|'lower';type:string;source:string;observedAt:string;note:string}[]
 }
 export interface WorkflowNotice {id:string;role:string;title:string;desc:string;target:string;priority:string;createdAt:string;read:boolean}
@@ -227,11 +235,12 @@ export interface GovernanceState {
  version:1;shiftPlans:GovernanceShiftPlan[];skillRoutes:GovernanceSkillRoute[];budgets:GovernanceBudget[];contracts:GovernanceContract[]
  meetings:GovernanceMeeting[];crossDepartmentItems:GovernanceCrossDepartmentItem[]
 }
-export interface ExcellenceEmployeeAchievement {id:string;jobNo:string;name:string;team:string;metric:string;unit:string;target:number;actual:number;qualityScore:number;effectiveTaskCount:number}
-export interface ExcellenceExperience {id:string;title:string;category:string;sourceTaskId:string;sourceTaskTitle:string;ownerJobNo:string;ownerName:string;team:string;metric:string;unit:string;direction:'higher'|'lower';baseline:number;target:number;actual:number;actionSummary:string;steps:string[];evidence:string[];verifiedBy:string;verifiedAt:string;aiPublished:boolean;publishedAt:string;keywords:string[];invocationCount:number}
+export interface ExcellenceDimension {code:'productivity'|'quality'|'satisfaction'|'fcr'|'marketing';label:string;weight:number;unit:string;target:number;actual:number;score:number}
+export interface ExcellenceEmployeeAchievement {id:string;jobNo:string;name:string;team:string;metric:string;unit:string;target:number;actual:number;qualityScore:number;effectiveTaskCount:number;dimensions:ExcellenceDimension[];compositeScore:number}
+export interface ExcellenceExperience {id:string;status?:'candidate'|'published'|'withdrawn';title:string;category:string;sourceTaskId:string;sourceTaskTitle:string;ownerJobNo:string;ownerName:string;team:string;metric:string;unit:string;direction:'higher'|'lower';baseline:number;target:number;actual:number;actionSummary:string;steps:string[];evidence:string[];verifiedBy:string;verifiedAt:string;aiPublished:boolean;publishedAt:string;keywords:string[];invocationCount:number}
 export interface ExcellenceRecording {id:string;title:string;callId:string;employeeJobNo:string;employeeName:string;team:string;business:string;durationSeconds:number;qualityScore:number;targetScore:number;submittedBy:string;submittedAt:string;aiSummary:string;highlights:string[];phraseIds:string[];aiPublished:boolean}
-export interface ExcellencePhrase {id:string;text:string;scenario:string;sourceRecordingId:string;employeeName:string;qualityScore:number;tags:string[];useCount:number}
-export interface ExcellenceState {version:1;evaluation:{period:string;topPercent:number;rule:string;minimumEvidenceTasks:number};employeeAchievements:ExcellenceEmployeeAchievement[];experiences:ExcellenceExperience[];recordings:ExcellenceRecording[];phrases:ExcellencePhrase[]}
+export interface ExcellencePhrase {id:string;category?:'催单话术'|'问题解决话术'|'优秀服务话术';title?:string;text:string;scenario:string;customerSignal?:string;objective?:string;steps?:string[];avoid?:string[];sourceRecordingId:string;employeeName:string;qualityScore:number;tags:string[];useCount:number}
+export interface ExcellenceState {version:1;scorecardVersion?:number;phraseLibraryVersion?:number;evaluation:{period:string;topPercent:number;rule:string;minimumEvidenceTasks:number;weights?:Record<string,number>};employeeAchievements:ExcellenceEmployeeAchievement[];experiences:ExcellenceExperience[];recordings:ExcellenceRecording[];phrases:ExcellencePhrase[]}
 export interface FinancialMetric {code:string;name:string;budget:number[];actual:number[]}
 export interface FinancialPerformanceState {
  version:1;scope:string;asOf:string;months:string[];budgetMonths:string[]
@@ -247,11 +256,11 @@ export interface WorkflowState {
  persistenceRevision?:number
  meta:{lastRefresh:string;nextRefresh:string;refreshIntervalMinutes:number;batchNo:number;sourceMode:string}
  org:{base:string;business:string;area:string;approvalChain:string[]}
- events:WorkflowEvent[];tasks:WorkflowTask[];notifications:WorkflowNotice[];audit:{at:string;actor:string;action:string}[];trainingReports:TrainingReportRecord[];training:TrainingState;quality:QualityState;excellence:ExcellenceState;financialPerformance:FinancialPerformanceState;morningBriefings:MorningBriefingState;people:PeopleState;learning:LearningState;governance:GovernanceState;hrbpCases:HrbpCaseRecord[];workforce:WorkforceState
+ events:WorkflowEvent[];tasks:WorkflowTask[];notifications:WorkflowNotice[];audit:{at:string;actor:string;action:string}[];trainingReports:TrainingReportRecord[];training:TrainingState;quality:QualityState;excellence:ExcellenceState;financialPerformance:FinancialPerformanceState;financialPerformances?:FinancialPerformanceState[];morningBriefings:MorningBriefingState;people:PeopleState;learning:LearningState;governance:GovernanceState;hrbpCases:HrbpCaseRecord[];workforce:WorkforceState
 }
 export interface WorkflowTaskActionPatch {
  patchType:'task_action';persistenceRevision?:number;task:WorkflowTask|null;tasks:WorkflowTask[]
- event:WorkflowEvent|null;events:WorkflowEvent[];notifications:WorkflowNotice[]
+ event:WorkflowEvent|null;events:WorkflowEvent[];notifications:WorkflowNotice[];excellence?:ExcellenceState
 }
 export type WorkflowMutationResult=WorkflowState|WorkflowTaskActionPatch
 
@@ -269,6 +278,7 @@ export const applyWorkflowMutation=(current:WorkflowState|null,result:WorkflowMu
  const noticeIds=new Set(result.notifications.map(item=>item.id))
  return {
   ...current,
+  ...(result.excellence?{excellence:result.excellence}:{}),
   ...(result.persistenceRevision===undefined?{}:{persistenceRevision:result.persistenceRevision}),
   tasks,events,notifications:[...result.notifications,...current.notifications.filter(item=>!noticeIds.has(item.id))],
  }
@@ -310,10 +320,12 @@ export const workflowApi={
  morningSuggestionAction:(id:string,action:'adopt'|'reject',comment:string)=>call(`/api/morning-briefings/suggestions/${id}/action`,{method:'POST',body:JSON.stringify({role:'supervisor',action,comment})}),
  morningScheduleAction:(id:string,role:'supervisor'|'leader',action:'save'|'issue'|'complete',payload:Record<string,unknown>={})=>call(`/api/morning-briefings/schedules/${id}/action`,{method:'POST',body:JSON.stringify({role,action,...payload})}),
  morningHelpTask:(role:'manager'|'director',team:string)=>call('/api/morning-briefings/help-task',{method:'POST',body:JSON.stringify({role,team})}),
+ pdcaBusinessMetrics:(role:'manager'|'director')=>call<{total:number;closed:number;targetMet:number;exceptionClosed:number;reopened:number;experienceCandidates:number;onTime:number;closeRate:number;targetAttainmentRate:number;exceptionRate:number;reopenRate:number;experienceConversionRate:number;onTimeRate:number}>(`/api/tasks/business-metrics?role=${role}`),
+ createBusinessTask:(payload:{role:string;idempotencyKey:string;sourceLabel:string;targetRole:string;owner:string;title:string;problem:string;issueCategory:string;issueLocation:string;target:string;successCriteria:string;actionPlan:string;metricCode?:string;metricLabel?:string;metricUnit?:string;metricDirection?:'higher'|'lower';baselineValue?:number;targetValue?:number;triggerType?:string;triggerRule?:string;triggerEvidence?:string;dataSource?:string;sourceLink?:string;baselineDate?:string;submitDueAt?:string;verificationDueAt?:string})=>call('/api/tasks',{method:'POST',body:JSON.stringify({...payload,source:'business-trigger'})}),
  review:(id:string,action:'approve'|'reject',comment='')=>call(`/api/events/${id}/review`,{method:'POST',body:JSON.stringify({role:'supervisor',actor:'前台客服主管',action,comment})}),
  createReportTask:(payload:{role:string;actor:string;reportDate:string;employee:{category:string;position:string;sourceRow:number;name:string;jobNo:string;team:string;reason:string}})=>call('/api/tasks',{method:'POST',body:JSON.stringify({...payload,source:'team-morning-brief'})}),
  createDirectiveTask:(payload:{role:string;title:string;targetRole:string;owner:string;problem:string;issueCategory:string;issueLocation:string;target:string;successCriteria:string;actionPlan:string;metricCode:string;metricLabel:string;metricUnit:string;metricDirection:'higher'|'lower';baselineValue:number;targetValue:number;plannedStartAt:string;submitDueAt:string;verificationDueAt:string;aiRationale:string;employeeCode?:string;employeeName?:string;team?:string})=>call('/api/tasks',{method:'POST',body:JSON.stringify({...payload,source:'management-directive'})}),
- createTaskRequest:(payload:{role:string;title:string;targetRole:string;owner:string;problem:string;issueCategory:string;issueLocation:string;target:string;successCriteria:string;actionPlan:string;metricCode:string;metricLabel:string;metricUnit:string;metricDirection:'higher'|'lower';baselineValue:number;targetValue:number;plannedStartAt:string;submitDueAt:string;verificationDueAt:string;aiRationale:string;employeeCode?:string;employeeName?:string;team?:string})=>call('/api/tasks',{method:'POST',body:JSON.stringify({...payload,source:'role-request'})}),
+ createTaskRequest:(payload:{role:string;title:string;targetRole:string;owner:string;problem:string;issueCategory:string;issueLocation:string;target:string;successCriteria:string;actionPlan:string;metricCode:string;metricLabel:string;metricUnit:string;metricDirection:'higher'|'lower';baselineValue:number;targetValue:number;plannedStartAt:string;submitDueAt:string;verificationDueAt:string;aiRationale:string;employeeCode?:string;employeeName?:string;team?:string;experienceId?:string;metricSet?:{code:string;label:string;baseline:number|null;target:number|null;unit:string;direction:'higher'|'lower';required:boolean}[]})=>call('/api/tasks',{method:'POST',body:JSON.stringify({...payload,source:'role-request'})}),
  createQualityCollaboration:(payload:{role:'quality';actor:string;requirement:string;dueAt:string;reinspectAt:string;successCriteria:string;employee:{id:string;name:string;team:string;leader:string;problem:string;evidence:string}})=>call('/api/quality/collaborations',{method:'POST',body:JSON.stringify(payload)}),
  qualityPlanAction:(id:string,action:'update'|'close',payload:Record<string,number>={})=>call(`/api/quality/plans/${id}/action`,{method:'POST',body:JSON.stringify({role:'quality',action,...payload})}),
  createQualityRecord:(payload:{planId:string;callId:string;employeeId:string;employeeName:string;team:string;business:string;score:number;result:'passed'|'failed';severity:'none'|'minor'|'major'|'critical';problem:string;standard:string;evidence:string})=>call('/api/quality/records',{method:'POST',body:JSON.stringify({role:'quality',...payload})}),
